@@ -109,20 +109,6 @@ python -m t0t_trading_system.main --mode live
 python -m unittest discover -s t0t_trading_system/tests
 ```
 
-## 推送到Git仓库
-
-本项目已经初始化为Git仓库。要将其推送到您的远程仓库，请按照以下步骤操作：
-
-1. 在GitHub、Gitee或您首选的Git托管服务上创建一个新仓库
-2. 添加远程仓库URL：
-   ```bash
-   git remote add origin <your-repository-url>
-   ```
-3. 推送代码到您的远程仓库：
-   ```bash
-   git push -u origin master
-   ```
-
 ## 许可证
 
 MIT

@@ -1,0 +1,3 @@
+[submodule "xtp_api_python"]
+	path = xtp_api_python
+	url = git@github.com:ztsec/xtp_api_python.git
