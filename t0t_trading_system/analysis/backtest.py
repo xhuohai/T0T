@@ -298,10 +298,38 @@ class Backtest:
             date = pd.Timestamp(date)
 
             # 获取当日的仓位
-            day_position = position_data.loc[position_data['date'].dt.date == date.date()]
-            if day_position.empty:
+            try:
+                # 首先检查position_data是否有date列
+                if 'date' in position_data.columns:
+                    # 确保date列是datetime类型
+                    if not pd.api.types.is_datetime64_dtype(position_data['date']):
+                        position_data['date'] = pd.to_datetime(position_data['date'])
+
+                    # 尝试匹配日期
+                    day_position = position_data.loc[position_data['date'].dt.date == date.date()]
+                    if day_position.empty:
+                        # 尝试直接匹配日期
+                        day_position = position_data.loc[position_data.index == date.date()]
+                        if day_position.empty:
+                            continue
+                else:
+                    # 如果没有date列，尝试使用索引
+                    # 将position_data的索引转换为日期
+                    if not isinstance(position_data.index, pd.DatetimeIndex):
+                        position_data.index = pd.to_datetime(position_data.index)
+
+                    # 尝试匹配日期
+                    day_position = position_data.loc[position_data.index.date == date.date()]
+                    if day_position.empty:
+                        # 尝试直接匹配日期
+                        day_position = position_data.loc[position_data.index == date]
+                        if day_position.empty:
+                            continue
+            except Exception as e:
+                print(f"获取当日仓位时发生异常: {e}")
                 continue
 
+            # 获取仓位值
             position = day_position['position'].iloc[0]
 
             # 计算当日的目标持仓价值
