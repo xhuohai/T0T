@@ -8,6 +8,17 @@ DATA_CONFIG = {
     "data_source": "tushare",     # 数据源
     "data_dir": "data/storage",   # 数据存储目录
     "cache_data": True,           # 是否缓存数据
+
+    # XTP API配置
+    "xtp": {
+        "quote_ip": "119.3.103.38",  # XTP行情服务器IP
+        "quote_port": 6002,          # XTP行情服务器端口
+        "user": "453191002321",      # 用户名
+        "password": "byvnJm62",      # 密码
+        "local_ip": "10.219.232.43", # 本地IP
+        "client_id": 1,              # 客户端ID
+        "log_dir": "xtp_log"         # 日志目录
+    }
 }
 
 # 技术指标配置

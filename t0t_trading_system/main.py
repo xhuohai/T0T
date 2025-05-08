@@ -61,7 +61,7 @@ def setup_argparse():
                         help='股票代码')
 
     parser.add_argument('--data_source', type=str, default=DATA_CONFIG['data_source'],
-                        choices=['tushare', 'akshare', 'baostock', 'mock'],
+                        choices=['tushare', 'akshare', 'baostock', 'xtp', 'mock'],
                         help='数据源')
 
     parser.add_argument('--token', type=str, default=None,

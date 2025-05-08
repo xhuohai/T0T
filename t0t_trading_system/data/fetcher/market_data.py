@@ -9,13 +9,17 @@ import numpy as np
 from datetime import datetime, timedelta
 import time
 import json
+import logging
+
+# 设置日志
+logger = logging.getLogger(__name__)
 
 try:
     import tushare as ts
     TUSHARE_AVAILABLE = True
 except ImportError:
     TUSHARE_AVAILABLE = False
-    print("Warning: tushare not installed, using mock data for testing")
+    logger.warning("Warning: tushare not installed, using mock data for testing")
 
 # 尝试导入其他可能的数据源
 try:
@@ -23,12 +27,23 @@ try:
     AKSHARE_AVAILABLE = True
 except ImportError:
     AKSHARE_AVAILABLE = False
+    logger.warning("Warning: akshare not installed")
 
 try:
     import baostock as bs
     BAOSTOCK_AVAILABLE = True
 except ImportError:
     BAOSTOCK_AVAILABLE = False
+    logger.warning("Warning: baostock not installed")
+
+# 尝试导入XTP API
+try:
+    from t0t_trading_system.data.fetcher.xtp_data import XTPDataSource
+    XTP_AVAILABLE = True
+    logger.info("Successfully imported XTP API")
+except ImportError as e:
+    XTP_AVAILABLE = False
+    logger.warning(f"Warning: XTP API not installed, using mock data for testing. Error: {e}")
 
 
 class MarketDataFetcher:
@@ -40,7 +55,7 @@ class MarketDataFetcher:
 
         Args:
             config: 配置信息
-            data_source: 数据源，支持 "tushare", "akshare", "baostock", "mock"
+            data_source: 数据源，支持 "tushare", "akshare", "baostock", "xtp", "mock"
             token: API token，如果使用tushare需要提供
         """
         self.config = config
@@ -59,11 +74,17 @@ class MarketDataFetcher:
             self.pro = ts.pro_api()
         elif data_source == "baostock" and BAOSTOCK_AVAILABLE:
             bs.login()
+        elif data_source == "xtp" and XTP_AVAILABLE:
+            self.xtp = XTPDataSource(config)
+            # 尝试连接XTP行情服务器
+            self.xtp.connect()
 
     def __del__(self):
         """析构函数，释放资源"""
         if self.data_source == "baostock" and BAOSTOCK_AVAILABLE:
             bs.logout()
+        elif self.data_source == "xtp" and XTP_AVAILABLE and hasattr(self, 'xtp'):
+            self.xtp.disconnect()
 
     def _get_cache_path(self, symbol, freq, start_date, end_date):
         """获取缓存文件路径"""
@@ -119,6 +140,8 @@ class MarketDataFetcher:
             return self._get_index_data_akshare(symbol, freq, start_date, end_date)
         elif self.data_source == "baostock" and BAOSTOCK_AVAILABLE:
             return self._get_index_data_baostock(symbol, freq, start_date, end_date)
+        elif self.data_source == "xtp" and XTP_AVAILABLE:
+            return self._get_index_data_xtp(symbol, freq, start_date, end_date)
         else:
             # 使用模拟数据用于测试
             return self._get_mock_data(symbol, freq, start_date, end_date)
@@ -358,6 +381,106 @@ class MarketDataFetcher:
         # 由于代码较长，这里仅作为占位符
         return self._get_mock_data(symbol, freq, start_date, end_date)
 
+    def _get_index_data_xtp(self, symbol, freq, start_date, end_date):
+        """使用XTP API获取指数数据"""
+        try:
+            if not hasattr(self, 'xtp') or not self.xtp.connected:
+                if not hasattr(self, 'xtp'):
+                    logger.info(f"初始化XTP数据源")
+                    self.xtp = XTPDataSource(self.config)
+                if not self.xtp.connect():
+                    logger.warning(f"连接XTP行情服务器失败，使用模拟数据")
+                    return self._get_mock_data(symbol, freq, start_date, end_date)
+
+            # 转换股票代码格式
+            # XTP的股票代码格式为：600000.SH 或 000001.SZ
+            if symbol.endswith('.SH'):
+                exchange_id = 1  # 上交所
+                ticker = symbol.split('.')[0]
+            elif symbol.endswith('.SZ'):
+                exchange_id = 2  # 深交所
+                ticker = symbol.split('.')[0]
+            else:
+                # 如果没有后缀，根据第一位判断
+                if symbol.startswith('6'):
+                    exchange_id = 1  # 上交所
+                    ticker = symbol
+                else:
+                    exchange_id = 2  # 深交所
+                    ticker = symbol
+
+            logger.info(f"使用XTP API获取指数{ticker}的行情数据")
+
+            # 查询指数行情
+            # 清空之前的数据
+            if hasattr(self.xtp.api, 'market_data') and ticker in self.xtp.api.market_data:
+                del self.xtp.api.market_data[ticker]
+
+            # 订阅行情
+            logger.info(f"订阅指数{ticker}行情...")
+            # 根据XTP API文档，subscribeMarketData方法的参数格式为：
+            # 第一个参数：股票代码列表
+            # 第二个参数：股票代码数量
+            # 第三个参数：交易所代码
+            ret = self.xtp.api.subscribeMarketData([ticker], 1, exchange_id)
+            if ret != 0:
+                error = self.xtp.api.getApiLastError()
+                logger.error(f"订阅行情失败: {error['error_id']} - {error['error_msg']}")
+                return self._get_mock_data(symbol, freq, start_date, end_date)
+
+            # 等待数据返回
+            logger.info(f"等待行情数据返回...")
+            time.sleep(2)
+
+            # 检查是否有数据返回
+            if not hasattr(self.xtp.api, 'market_data') or ticker not in self.xtp.api.market_data or not self.xtp.api.market_data[ticker]:
+                logger.warning(f"未获取到行情数据: {ticker}，使用模拟数据")
+                return self._get_mock_data(symbol, freq, start_date, end_date)
+
+            # 转换为DataFrame
+            logger.info(f"获取到{len(self.xtp.api.market_data[ticker])}条行情数据")
+            df = pd.DataFrame(self.xtp.api.market_data[ticker])
+            df = df.set_index('datetime')
+
+            # 根据频率转换数据
+            if freq == "D":
+                # 日线数据，不需要转换
+                pass
+            elif freq == "W":
+                # 转换为周线数据
+                df = df.resample('W').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                })
+            elif freq == "M":
+                # 转换为月线数据
+                df = df.resample('M').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                })
+
+            # 筛选日期范围
+            df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))]
+
+            # 确保数据按日期排序
+            df = df.sort_index()
+
+            # 缓存数据
+            self._save_to_cache(df, symbol, freq, start_date, end_date)
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error fetching data from XTP: {e}")
+            # 如果获取失败，使用模拟数据
+            return self._get_mock_data(symbol, freq, start_date, end_date)
+
     def _get_mock_data(self, symbol, freq, start_date, end_date):
         """生成模拟数据用于测试"""
         # 生成日期范围
@@ -428,6 +551,8 @@ class MarketDataFetcher:
             return self._get_stock_data_akshare(symbol, freq, start_date, end_date, adjust)
         elif self.data_source == "baostock" and BAOSTOCK_AVAILABLE:
             return self._get_stock_data_baostock(symbol, freq, start_date, end_date, adjust)
+        elif self.data_source == "xtp" and XTP_AVAILABLE:
+            return self._get_stock_data_xtp(symbol, freq, start_date, end_date, adjust)
         else:
             # 使用模拟数据用于测试
             return self._get_mock_data(symbol, freq, start_date, end_date)
@@ -489,6 +614,114 @@ class MarketDataFetcher:
 
         except Exception as e:
             print(f"Error fetching data from tushare: {e}")
+            return self._get_mock_data(symbol, freq, start_date, end_date)
+
+    def _get_stock_data_baostock(self, symbol, freq, start_date, end_date, adjust):
+        """使用baostock获取个股数据"""
+        # 实现baostock数据获取逻辑
+        # 由于代码较长，这里仅作为占位符
+        return self._get_mock_data(symbol, freq, start_date, end_date)
+
+    def _get_stock_data_xtp(self, symbol, freq, start_date, end_date, adjust):
+        """使用XTP API获取个股数据"""
+        try:
+            if not hasattr(self, 'xtp') or not self.xtp.connected:
+                if not hasattr(self, 'xtp'):
+                    self.xtp = XTPDataSource(self.config)
+                if not self.xtp.connect():
+                    logger.warning(f"连接XTP行情服务器失败，使用模拟数据")
+                    return self._get_mock_data(symbol, freq, start_date, end_date)
+
+            # 转换股票代码格式
+            # XTP的股票代码格式为：600000.SH 或 000001.SZ
+            if symbol.endswith('.SH'):
+                exchange_id = 1  # 上交所
+                ticker = symbol.split('.')[0]
+            elif symbol.endswith('.SZ'):
+                exchange_id = 2  # 深交所
+                ticker = symbol.split('.')[0]
+            else:
+                # 如果没有后缀，根据第一位判断
+                if symbol.startswith('6'):
+                    exchange_id = 1  # 上交所
+                    ticker = symbol
+                else:
+                    exchange_id = 2  # 深交所
+                    ticker = symbol
+
+            logger.info(f"使用XTP API获取股票{ticker}的行情数据")
+
+            # 查询股票行情
+            # 清空之前的数据
+            if hasattr(self.xtp.api, 'market_data') and ticker in self.xtp.api.market_data:
+                del self.xtp.api.market_data[ticker]
+
+            # 订阅行情
+            logger.info(f"订阅股票{ticker}行情...")
+            # 根据XTP API文档，subscribeMarketData方法的参数格式为：
+            # 第一个参数：股票代码列表
+            # 第二个参数：股票代码数量
+            # 第三个参数：交易所代码
+            ret = self.xtp.api.subscribeMarketData([ticker], 1, exchange_id)
+            if ret != 0:
+                error = self.xtp.api.getApiLastError()
+                logger.error(f"订阅行情失败: {error['error_id']} - {error['error_msg']}")
+                return self._get_mock_data(symbol, freq, start_date, end_date)
+
+            # 等待数据返回
+            logger.info(f"等待行情数据返回...")
+            time.sleep(2)
+
+            # 检查是否有数据返回
+            if not hasattr(self.xtp.api, 'market_data') or ticker not in self.xtp.api.market_data or not self.xtp.api.market_data[ticker]:
+                logger.warning(f"未获取到行情数据: {ticker}，使用模拟数据")
+                return self._get_mock_data(symbol, freq, start_date, end_date)
+
+            # 转换为DataFrame
+            logger.info(f"获取到{len(self.xtp.api.market_data[ticker])}条行情数据")
+            df = pd.DataFrame(self.xtp.api.market_data[ticker])
+            df = df.set_index('datetime')
+
+            # 根据频率转换数据
+            if freq == "D":
+                # 日线数据，不需要转换
+                pass
+            elif freq == "W":
+                # 转换为周线数据
+                df = df.resample('W').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                })
+            elif freq == "M":
+                # 转换为月线数据
+                df = df.resample('M').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                })
+            elif freq == "min":
+                # 分钟数据，不需要转换
+                pass
+
+            # 筛选日期范围
+            df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))]
+
+            # 确保数据按日期排序
+            df = df.sort_index()
+
+            # 缓存数据
+            self._save_to_cache(df, symbol, freq, start_date, end_date)
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error fetching data from XTP: {e}")
+            # 如果获取失败，使用模拟数据
             return self._get_mock_data(symbol, freq, start_date, end_date)
 
     def _get_stock_data_akshare(self, symbol, freq, start_date, end_date, adjust):
