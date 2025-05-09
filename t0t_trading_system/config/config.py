@@ -15,7 +15,7 @@ DATA_CONFIG = {
         "quote_port": 6002,          # XTP行情服务器端口
         "user": "453191002321",      # 用户名
         "password": "byvnJm62",      # 密码
-        "local_ip": "10.219.232.43", # 本地IP
+        "local_ip": "",              # 本地IP
         "client_id": 1,              # 客户端ID
         "log_dir": "xtp_log"         # 日志目录
     }
