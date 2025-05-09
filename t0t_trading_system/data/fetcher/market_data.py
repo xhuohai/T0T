@@ -389,8 +389,8 @@ class MarketDataFetcher:
                     logger.info(f"初始化XTP数据源")
                     self.xtp = XTPDataSource(self.config)
                 if not self.xtp.connect():
-                    logger.warning(f"连接XTP行情服务器失败，使用模拟数据")
-                    return self._get_mock_data(symbol, freq, start_date, end_date)
+                    logger.error(f"连接XTP行情服务器失败，退出")
+                    raise Exception("连接XTP行情服务器失败")
 
             # 转换股票代码格式
             # XTP的股票代码格式为：600000.SH 或 000001.SZ
@@ -422,11 +422,11 @@ class MarketDataFetcher:
             # 第一个参数：股票代码列表
             # 第二个参数：股票代码数量
             # 第三个参数：交易所代码
-            ret = self.xtp.api.subscribeMarketData([ticker], 1, exchange_id)
+            ret = self.xtp.api.subscribeMarketData([{"ticker": ticker}], 1, exchange_id)
             if ret != 0:
                 error = self.xtp.api.getApiLastError()
                 logger.error(f"订阅行情失败: {error['error_id']} - {error['error_msg']}")
-                return self._get_mock_data(symbol, freq, start_date, end_date)
+                raise Exception(f"订阅行情失败: {error['error_id']} - {error['error_msg']}")
 
             # 等待数据返回
             logger.info(f"等待行情数据返回...")
@@ -434,8 +434,8 @@ class MarketDataFetcher:
 
             # 检查是否有数据返回
             if not hasattr(self.xtp.api, 'market_data') or ticker not in self.xtp.api.market_data or not self.xtp.api.market_data[ticker]:
-                logger.warning(f"未获取到行情数据: {ticker}，使用模拟数据")
-                return self._get_mock_data(symbol, freq, start_date, end_date)
+                logger.error(f"未获取到行情数据: {ticker}, 退出")
+                raise Exception(f"未获取到行情数据: {ticker}")
 
             # 转换为DataFrame
             logger.info(f"获取到{len(self.xtp.api.market_data[ticker])}条行情数据")
@@ -478,8 +478,7 @@ class MarketDataFetcher:
 
         except Exception as e:
             logger.error(f"Error fetching data from XTP: {e}")
-            # 如果获取失败，使用模拟数据
-            return self._get_mock_data(symbol, freq, start_date, end_date)
+            raise
 
     def _get_mock_data(self, symbol, freq, start_date, end_date):
         """生成模拟数据用于测试"""
@@ -662,11 +661,11 @@ class MarketDataFetcher:
             # 第一个参数：股票代码列表
             # 第二个参数：股票代码数量
             # 第三个参数：交易所代码
-            ret = self.xtp.api.subscribeMarketData([ticker], 1, exchange_id)
+            ret = self.xtp.api.subscribeMarketData([{"ticker": ticker}], 1, exchange_id)
             if ret != 0:
                 error = self.xtp.api.getApiLastError()
                 logger.error(f"订阅行情失败: {error['error_id']} - {error['error_msg']}")
-                return self._get_mock_data(symbol, freq, start_date, end_date)
+                raise Exception(f"订阅行情失败: {error['error_id']} - {error['error_msg']}")
 
             # 等待数据返回
             logger.info(f"等待行情数据返回...")
@@ -674,8 +673,8 @@ class MarketDataFetcher:
 
             # 检查是否有数据返回
             if not hasattr(self.xtp.api, 'market_data') or ticker not in self.xtp.api.market_data or not self.xtp.api.market_data[ticker]:
-                logger.warning(f"未获取到行情数据: {ticker}，使用模拟数据")
-                return self._get_mock_data(symbol, freq, start_date, end_date)
+                logger.warning(f"未获取到行情数据: {ticker}")
+                raise Exception(f"未获取到行情数据: {ticker}")
 
             # 转换为DataFrame
             logger.info(f"获取到{len(self.xtp.api.market_data[ticker])}条行情数据")
@@ -721,8 +720,7 @@ class MarketDataFetcher:
 
         except Exception as e:
             logger.error(f"Error fetching data from XTP: {e}")
-            # 如果获取失败，使用模拟数据
-            return self._get_mock_data(symbol, freq, start_date, end_date)
+            raise e
 
     def _get_stock_data_akshare(self, symbol, freq, start_date, end_date, adjust):
         """使用akshare获取个股数据"""

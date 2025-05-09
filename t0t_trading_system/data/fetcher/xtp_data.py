@@ -229,6 +229,7 @@ class XTPDataSource:
         if self.api and self.connected:
             try:
                 self.api.logout()
+                self.api.exit()
                 logger.info("XTP行情服务登出成功")
             except Exception as e:
                 logger.error(f"XTP行情服务登出异常: {e}")
