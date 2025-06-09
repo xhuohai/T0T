@@ -1,0 +1,111 @@
+# T0T交易系统本地回测配置文件
+
+# 数据配置
+data:
+  source: "local"  # 使用本地数据源
+  local_data_dir: "data/processed"  # 本地数据目录
+  cache_data: true
+  data_dir: "data/storage"
+
+# 回测配置
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 1000000  # 初始资金100万
+  commission_rate: 0.0003   # 手续费率0.03%
+  slippage: 0.001          # 滑点0.1%
+  
+# 股票池配置
+stock_pool:
+  symbols:
+    - "SH000001"  # 上证指数
+    - "SH600000"  # 浦发银行
+    - "SZ000001"  # 平安银行
+    - "SZ000002"  # 万科A
+    - "SH600028"  # 中国石化
+    - "SH600036"  # 招商银行
+    - "SH600519"  # 贵州茅台
+    - "SH601318"  # 中国平安
+    - "SH601398"  # 工商银行
+    - "SZ002594"  # 比亚迪
+  
+  # 股票筛选条件
+  filters:
+    min_price: 5.0           # 最低价格
+    max_price: 1000.0        # 最高价格
+    min_volume: 1000000      # 最小成交量
+    min_market_cap: 1000000000  # 最小市值
+
+# 策略配置
+strategy:
+  name: "T0Strategy"
+  
+  # 技术指标参数
+  indicators:
+    macd:
+      fast_period: 12
+      slow_period: 26
+      signal_period: 9
+    
+    kdj:
+      k_period: 9
+      d_period: 3
+      j_period: 3
+    
+    ma:
+      short_period: 5
+      medium_period: 20
+      long_period: 60
+    
+    fibonacci:
+      levels: [0.236, 0.382, 0.5, 0.618, 0.786]
+  
+  # 多周期分析
+  timeframes:
+    monthly: "M"
+    weekly: "W"
+    daily: "D"
+    minute: "min"
+  
+  # 交易参数
+  trading:
+    max_position_size: 0.1    # 单只股票最大仓位10%
+    stop_loss: 0.05           # 止损5%
+    take_profit: 0.1          # 止盈10%
+    min_holding_period: 5     # 最小持仓时间（分钟）
+    max_holding_period: 240   # 最大持仓时间（分钟）
+    
+    # T0交易参数
+    t0_enabled: true
+    t0_profit_threshold: 0.02  # T0获利阈值2%
+    t0_loss_threshold: 0.01    # T0止损阈值1%
+
+# 风险管理
+risk_management:
+  max_drawdown: 0.1         # 最大回撤10%
+  max_daily_loss: 0.02      # 单日最大亏损2%
+  position_limit: 0.8       # 总仓位限制80%
+  
+  # 动态止损
+  dynamic_stop_loss:
+    enabled: true
+    trailing_stop: 0.03     # 跟踪止损3%
+    
+# 输出配置
+output:
+  save_trades: true
+  save_positions: true
+  save_performance: true
+  output_dir: "results"
+  
+  # 图表配置
+  charts:
+    enabled: true
+    save_charts: true
+    show_indicators: true
+    
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/backtest.log"
+  console: true

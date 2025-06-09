@@ -23,6 +23,26 @@ try:
 except ImportError as e:
     XTP_AVAILABLE = False
     logger.warning(f"Warning: XTP API not installed, using mock data for testing. Error: {e}")
+    # 创建一个虚拟的QuoteApi类
+    class QuoteApi:
+        def __init__(self):
+            pass
+        def createQuoteApi(self, *args):
+            pass
+        def setHeartBeatInterval(self, *args):
+            pass
+        def setUDPBufferSize(self, *args):
+            pass
+        def login(self, *args):
+            return -1
+        def logout(self):
+            pass
+        def getApiLastError(self):
+            return {'error_id': -1, 'error_msg': 'XTP API not available'}
+        def queryAllTickers(self, *args):
+            return -1
+        def subscribeMarketData(self, *args):
+            return -1
 
 class XTPQuoteApi(QuoteApi):
     """XTP行情API封装类"""
@@ -229,7 +249,6 @@ class XTPDataSource:
         if self.api and self.connected:
             try:
                 self.api.logout()
-                self.api.exit()
                 logger.info("XTP行情服务登出成功")
             except Exception as e:
                 logger.error(f"XTP行情服务登出异常: {e}")
