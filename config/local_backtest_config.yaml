@@ -39,46 +39,57 @@ stock_pool:
 # 策略配置
 strategy:
   name: "T0Strategy"
-  
+
   # 技术指标参数
   indicators:
     macd:
       fast_period: 12
       slow_period: 26
       signal_period: 9
-    
+
     kdj:
       k_period: 9
       d_period: 3
       j_period: 3
-    
+
     ma:
       short_period: 5
       medium_period: 20
       long_period: 60
-    
+
     fibonacci:
-      levels: [0.236, 0.382, 0.5, 0.618, 0.786]
-  
+      levels: [0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.272, 1.382, 1.618]
+      tolerance: 0.005  # 斐波那契容差0.5%
+
   # 多周期分析
   timeframes:
     monthly: "M"
     weekly: "W"
     daily: "D"
     minute: "min"
-  
-  # 交易参数
+
+  # T0交易参数
+  t0_trading:
+    enabled: true
+    min_trade_portion: 0.125    # 最小交易比例1/8
+    max_trade_portion: 0.333    # 最大交易比例1/3
+    position_tolerance: 0.10    # 仓位容差10%（减少强制调整）
+    force_position_adjustment: false  # 禁用强制仓位调整
+    end_of_day_adjustment: false     # 禁用收盘前调整
+    weekly_adjustment: false         # 禁用周末调整
+
+    # 背离检测参数
+    divergence:
+      window: 5           # 检测窗口
+      threshold: 0.01     # 背离阈值1%
+
+  # 传统交易参数（保留兼容性）
   trading:
     max_position_size: 0.1    # 单只股票最大仓位10%
     stop_loss: 0.05           # 止损5%
     take_profit: 0.1          # 止盈10%
     min_holding_period: 5     # 最小持仓时间（分钟）
     max_holding_period: 240   # 最大持仓时间（分钟）
-    
-    # T0交易参数
-    t0_enabled: true
-    t0_profit_threshold: 0.02  # T0获利阈值2%
-    t0_loss_threshold: 0.01    # T0止损阈值1%
 
 # 风险管理
 risk_management:

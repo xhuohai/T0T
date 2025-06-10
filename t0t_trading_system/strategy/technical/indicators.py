@@ -171,44 +171,77 @@ class TechnicalIndicators:
     @staticmethod
     def detect_divergence(data, price_key='close', indicator_key=None, window=5, threshold=0.01):
         """
-        检测顶底背离
-        
+        检测顶底背离（改进版）
+
         Args:
             data: DataFrame，包含价格和指标数据
             price_key: str，价格列名
             indicator_key: str，指标列名
             window: int，检测窗口大小
             threshold: float，背离阈值
-            
+
         Returns:
             DataFrame: 包含背离信号的DataFrame
         """
         if indicator_key is None:
             raise ValueError("indicator_key must be specified")
-            
+
         df = data.copy()
-        
+
         # 初始化背离列
         df['bullish_divergence'] = False  # 底背离（价格创新低，指标不创新低）
         df['bearish_divergence'] = False  # 顶背离（价格创新高，指标不创新高）
-        
+        df['divergence_strength'] = 0.0  # 背离强度（使用浮点数）
+
         # 遍历数据检测背离
-        for i in range(window, len(df)):
+        for i in range(window * 2, len(df)):  # 需要更多历史数据来确认背离
             # 获取当前窗口的数据
-            window_data = df.iloc[i-window:i+1]
-            
-            # 检测价格是否创新低
-            if window_data[price_key].iloc[-1] <= window_data[price_key].min() * (1 + threshold):
-                # 检测指标是否不创新低
-                if window_data[indicator_key].iloc[-1] > window_data[indicator_key].min() * (1 + threshold):
-                    df.loc[df.index[i], 'bullish_divergence'] = True
-            
-            # 检测价格是否创新高
-            if window_data[price_key].iloc[-1] >= window_data[price_key].max() * (1 - threshold):
-                # 检测指标是否不创新高
-                if window_data[indicator_key].iloc[-1] < window_data[indicator_key].max() * (1 - threshold):
-                    df.loc[df.index[i], 'bearish_divergence'] = True
-        
+            current_window = df.iloc[i-window:i+1]
+            previous_window = df.iloc[i-window*2:i-window+1]
+
+            current_price = current_window[price_key].iloc[-1]
+            current_indicator = current_window[indicator_key].iloc[-1]
+
+            # 检测底背离
+            # 条件1：当前价格创新低
+            current_min_price = current_window[price_key].min()
+            previous_min_price = previous_window[price_key].min()
+
+            if current_price <= current_min_price * (1 + threshold):
+                # 条件2：当前价格低于前一个窗口的最低价
+                if current_price < previous_min_price * (1 - threshold):
+                    # 条件3：指标没有创新低，甚至可能走高
+                    current_min_indicator = current_window[indicator_key].min()
+                    previous_min_indicator = previous_window[indicator_key].min()
+
+                    if current_indicator > current_min_indicator * (1 + threshold):
+                        if current_indicator >= previous_min_indicator * (1 - threshold):
+                            df.loc[df.index[i], 'bullish_divergence'] = True
+                            # 计算背离强度
+                            price_decline = (previous_min_price - current_price) / previous_min_price
+                            indicator_improvement = (current_indicator - previous_min_indicator) / abs(previous_min_indicator)
+                            df.loc[df.index[i], 'divergence_strength'] = price_decline + indicator_improvement
+
+            # 检测顶背离
+            # 条件1：当前价格创新高
+            current_max_price = current_window[price_key].max()
+            previous_max_price = previous_window[price_key].max()
+
+            if current_price >= current_max_price * (1 - threshold):
+                # 条件2：当前价格高于前一个窗口的最高价
+                if current_price > previous_max_price * (1 + threshold):
+                    # 条件3：指标没有创新高，甚至可能走低
+                    current_max_indicator = current_window[indicator_key].max()
+                    previous_max_indicator = previous_window[indicator_key].max()
+
+                    if current_indicator < current_max_indicator * (1 - threshold):
+                        if current_indicator <= previous_max_indicator * (1 + threshold):
+                            df.loc[df.index[i], 'bearish_divergence'] = True
+                            # 计算背离强度
+                            price_rise = (current_price - previous_max_price) / previous_max_price
+                            indicator_decline = (previous_max_indicator - current_indicator) / abs(previous_max_indicator)
+                            df.loc[df.index[i], 'divergence_strength'] = price_rise + indicator_decline
+
         return df
     
     @staticmethod

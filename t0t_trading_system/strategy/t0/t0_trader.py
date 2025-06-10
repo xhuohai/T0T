@@ -1,378 +1,380 @@
 """
-T0交易模块
-实现日内高低点确认和T0操作逻辑
+改进的T0交易器
+基于真实T0交易原理：维持日内仓位不变，通过低买高卖获取价差
 """
 
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-
-class T0Trader:
-    """T0交易类"""
-
+class ImprovedT0Trader:
     def __init__(self, config):
         """
-        初始化T0交易器
-
+        初始化改进的T0交易器
+        
         Args:
             config: T0交易配置
         """
         self.config = config
-        self.min_trade_portion = config.get("min_trade_portion", 1/8)
-        self.max_trade_portion = config.get("max_trade_portion", 1/3)
-        self.fib_tolerance = config.get("fib_tolerance", 0.005)
-        self.fib_levels = config.get("fib_levels", [0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.272, 1.382, 1.618])
-        self.price_tolerance = config.get("price_tolerance", 0.005)
-
-        # 交易记录
-        self.trade_history = []
-
-        # 当前持仓
-        self.current_holdings = 0
-
-        # 当前现金
-        self.current_cash = 0
-
+        self.min_trade_portion = config.get("min_trade_portion", 1/8)  # 最小交易比例
+        self.max_trade_portion = config.get("max_trade_portion", 1/3)  # 最大交易比例
+        self.price_threshold = config.get("price_threshold", 0.01)  # 价格变动阈值1%
+        
+        # T0交易核心参数
+        self.base_position = 0  # 基础仓位（日内需要维持的仓位）
+        self.current_holdings = 0  # 当前持仓
+        self.current_cash = 0  # 当前现金
+        self.daily_trades = []  # 当日交易记录
+        self.t0_profit = 0  # T0交易累计收益
+        
         # 交易状态
         self.trade_state = {
-            'last_trade_time': None,
-            'last_trade_price': None,
-            'last_trade_type': None,  # 'buy' or 'sell'
-            'last_trade_volume': 0,
-            'open_trades': [],  # 未平仓的交易
-            'pending_signals': []  # 待确认的信号
+            'last_buy_price': None,
+            'last_sell_price': None,
+            'daily_high': None,
+            'daily_low': None,
+            'position_adjusted_today': False
         }
 
-    def calculate_fibonacci_levels(self, high_price, low_price):
+    def set_base_position(self, base_position):
         """
-        计算斐波那契回调水平
-
+        设置基础仓位（日内需要维持的仓位）
+        
         Args:
-            high_price: float，最高价
-            low_price: float，最低价
-
-        Returns:
-            dict: 斐波那契水平
+            base_position: float，基础仓位数量
         """
-        price_range = high_price - low_price
+        self.base_position = base_position
+        if self.current_holdings == 0:
+            self.current_holdings = base_position
 
-        levels = {}
-        for level in self.fib_levels:
-            if level <= 1.0:
-                levels[str(level)] = low_price + level * price_range
-            else:
-                levels[str(level)] = high_price + (level - 1.0) * price_range
-
-        return levels
-
-    def is_near_fibonacci_level(self, price, high_price, low_price):
+    def detect_t0_signals(self, minute_data):
         """
-        检查价格是否接近斐波那契水平
-
+        检测T0交易信号
+        基于价格波动和技术指标
+        
         Args:
-            price: float，当前价格
-            high_price: float，最高价
-            low_price: float，最低价
-
+            minute_data: DataFrame，分钟级数据
+            
         Returns:
-            bool: 是否接近斐波那契水平
-            str: 最接近的斐波那契水平
+            DataFrame: 包含T0交易信号的数据
         """
-        fib_levels = self.calculate_fibonacci_levels(high_price, low_price)
-
-        min_distance = float('inf')
-        nearest_level = None
-
-        for level, level_price in fib_levels.items():
-            distance = abs(price - level_price) / price
-            if distance < min_distance:
-                min_distance = distance
-                nearest_level = level
-
-        is_near = min_distance <= self.fib_tolerance
-
-        return is_near, nearest_level
-
-    def detect_intraday_signals(self, minute_data, timeframe='1min'):
-        """
-        检测日内交易信号
-
-        Args:
-            minute_data: DataFrame，分钟级数据，包含技术指标
-            timeframe: str，时间框架，如'1min', '5min'等
-
-        Returns:
-            DataFrame: 包含交易信号的DataFrame
-        """
-        # 确保数据按时间排序
-        minute_data = minute_data.sort_index()
-
         # 初始化信号列
-        minute_data['buy_signal'] = False
-        minute_data['sell_signal'] = False
-        minute_data['signal_strength'] = 0  # 信号强度
-
-        # 检查是否包含必要的指标
-        required_columns = ['bullish_divergence', 'bearish_divergence', 'macd_dif', 'macd_dea', 'kdj_j', 'kdj_k', 'kdj_d']
-        for col in required_columns:
-            if col not in minute_data.columns:
-                raise ValueError(f"Minute data must contain {col}")
-
-        # 获取昨日K线数据
-        yesterday = minute_data.index[0].date() - timedelta(days=1)
-        yesterday_data = minute_data.loc[minute_data.index.date == yesterday]
-
-        if not yesterday_data.empty:
-            yesterday_high = yesterday_data['high'].max()
-            yesterday_low = yesterday_data['low'].min()
+        minute_data['t0_buy_signal'] = False
+        minute_data['t0_sell_signal'] = False
+        minute_data['signal_strength'] = 0.0
+        minute_data['signal_type'] = ''
+        
+        # 计算价格变动
+        minute_data['price_change'] = minute_data['close'].pct_change()
+        minute_data['high_change'] = minute_data['high'].pct_change()
+        minute_data['low_change'] = minute_data['low'].pct_change()
+        
+        # 计算移动平均线
+        minute_data['ma5'] = minute_data['close'].rolling(window=5).mean()
+        minute_data['ma10'] = minute_data['close'].rolling(window=10).mean()
+        
+        # 更新日内高低点
+        if self.trade_state['daily_high'] is None:
+            self.trade_state['daily_high'] = minute_data['high'].max()
+            self.trade_state['daily_low'] = minute_data['low'].min()
         else:
-            # 如果没有昨日数据，使用当日的高低点
-            today_data = minute_data.loc[minute_data.index.date == minute_data.index[0].date()]
-            yesterday_high = today_data['high'].max()
-            yesterday_low = today_data['low'].min()
-
-        # 计算可能的斐波那契支撑位和阻力位
-        fib_levels = self.calculate_fibonacci_levels(yesterday_high, yesterday_low)
-
-        # 遍历分钟数据检测信号
-        for i in range(1, len(minute_data)):
+            self.trade_state['daily_high'] = max(self.trade_state['daily_high'], minute_data['high'].max())
+            self.trade_state['daily_low'] = min(self.trade_state['daily_low'], minute_data['low'].min())
+        
+        # 遍历数据检测信号
+        for i in range(10, len(minute_data)):  # 从第10个数据点开始，确保有足够历史数据
             current_bar = minute_data.iloc[i]
-            prev_bar = minute_data.iloc[i-1]
-
-            # 检测底背离买入信号
-            if current_bar['bullish_divergence']:
-                # 检查是否接近斐波那契水平
-                is_near_fib, nearest_level = self.is_near_fibonacci_level(
-                    current_bar['low'], yesterday_high, yesterday_low)
-
-                # 检查MACD和KDJ是否同时出现底背离
-                macd_bullish = current_bar['macd_dif'] > current_bar['macd_dea']
-                kdj_bullish = current_bar['kdj_j'] > current_bar['kdj_d']
-
-                # 设置买入信号
-                minute_data.loc[minute_data.index[i], 'buy_signal'] = True
-
-                # 设置信号强度
-                signal_strength = 1
-                if is_near_fib:
-                    signal_strength += 1
-                if macd_bullish and kdj_bullish:
-                    signal_strength += 1
-
-                minute_data.loc[minute_data.index[i], 'signal_strength'] = signal_strength
-
-            # 检测顶背离卖出信号
-            if current_bar['bearish_divergence']:
-                # 检查是否接近斐波那契水平
-                is_near_fib, nearest_level = self.is_near_fibonacci_level(
-                    current_bar['high'], yesterday_high, yesterday_low)
-
-                # 检查MACD和KDJ是否同时出现顶背离
-                macd_bearish = current_bar['macd_dif'] < current_bar['macd_dea']
-                kdj_bearish = current_bar['kdj_j'] < current_bar['kdj_d']
-
-                # 设置卖出信号
-                minute_data.loc[minute_data.index[i], 'sell_signal'] = True
-
-                # 设置信号强度
-                signal_strength = 1
-                if is_near_fib:
-                    signal_strength += 1
-                if macd_bearish and kdj_bearish:
-                    signal_strength += 1
-
-                minute_data.loc[minute_data.index[i], 'signal_strength'] = signal_strength
-
+            
+            # 计算相对位置
+            daily_range = self.trade_state['daily_high'] - self.trade_state['daily_low']
+            if daily_range > 0:
+                relative_position = (current_bar['close'] - self.trade_state['daily_low']) / daily_range
+            else:
+                relative_position = 0.5
+            
+            # T0买入信号：价格相对较低且有反弹迹象
+            if self._should_t0_buy(current_bar, minute_data.iloc[i-5:i], relative_position):
+                minute_data.loc[minute_data.index[i], 't0_buy_signal'] = True
+                minute_data.loc[minute_data.index[i], 'signal_strength'] = self._calculate_buy_strength(current_bar, relative_position)
+                minute_data.loc[minute_data.index[i], 'signal_type'] = 't0_buy'
+            
+            # T0卖出信号：价格相对较高且有回调迹象
+            if self._should_t0_sell(current_bar, minute_data.iloc[i-5:i], relative_position):
+                minute_data.loc[minute_data.index[i], 't0_sell_signal'] = True
+                minute_data.loc[minute_data.index[i], 'signal_strength'] = self._calculate_sell_strength(current_bar, relative_position)
+                minute_data.loc[minute_data.index[i], 'signal_type'] = 't0_sell'
+        
         return minute_data
 
-    def execute_trade(self, signal_time, signal_type, price, volume, position_size):
+    def _should_t0_buy(self, current_bar, recent_data, relative_position):
         """
-        执行交易
+        判断是否应该T0买入
+        
+        Args:
+            current_bar: 当前K线数据
+            recent_data: 最近的K线数据
+            relative_position: 相对位置（0-1）
+            
+        Returns:
+            bool: 是否应该买入
+        """
+        # 条件1：价格在日内相对低位（下半部分）
+        if relative_position > 0.6:
+            return False
+        
+        # 条件2：价格下跌后有反弹迹象
+        if current_bar['close'] <= recent_data['close'].min() * 1.002:  # 接近近期低点
+            if current_bar['close'] > current_bar['low']:  # 当前价格高于最低价，有反弹迹象
+                return True
+        
+        # 条件3：技术指标支持
+        if 'ma5' in current_bar and 'ma10' in current_bar:
+            if current_bar['close'] < current_bar['ma5'] and current_bar['ma5'] > current_bar['ma10']:
+                return True
+        
+        return False
 
+    def _should_t0_sell(self, current_bar, recent_data, relative_position):
+        """
+        判断是否应该T0卖出
+        
+        Args:
+            current_bar: 当前K线数据
+            recent_data: 最近的K线数据
+            relative_position: 相对位置（0-1）
+            
+        Returns:
+            bool: 是否应该卖出
+        """
+        # 条件1：价格在日内相对高位（上半部分）
+        if relative_position < 0.4:
+            return False
+        
+        # 条件2：价格上涨后有回调迹象
+        if current_bar['close'] >= recent_data['close'].max() * 0.998:  # 接近近期高点
+            if current_bar['close'] < current_bar['high']:  # 当前价格低于最高价，有回调迹象
+                return True
+        
+        # 条件3：技术指标支持
+        if 'ma5' in current_bar and 'ma10' in current_bar:
+            if current_bar['close'] > current_bar['ma5'] and current_bar['ma5'] < current_bar['ma10']:
+                return True
+        
+        return False
+
+    def _calculate_buy_strength(self, current_bar, relative_position):
+        """
+        计算买入信号强度
+        
+        Args:
+            current_bar: 当前K线数据
+            relative_position: 相对位置
+            
+        Returns:
+            float: 信号强度
+        """
+        strength = 1.0
+        
+        # 位置越低，强度越高
+        strength += (0.5 - relative_position) * 2  # 最低位置时额外+1
+        
+        # 成交量放大
+        if 'volume' in current_bar and current_bar['volume'] > 0:
+            strength += 0.5
+        
+        return max(0.5, min(3.0, strength))
+
+    def _calculate_sell_strength(self, current_bar, relative_position):
+        """
+        计算卖出信号强度
+        
+        Args:
+            current_bar: 当前K线数据
+            relative_position: 相对位置
+            
+        Returns:
+            float: 信号强度
+        """
+        strength = 1.0
+        
+        # 位置越高，强度越高
+        strength += (relative_position - 0.5) * 2  # 最高位置时额外+1
+        
+        # 成交量放大
+        if 'volume' in current_bar and current_bar['volume'] > 0:
+            strength += 0.5
+        
+        return max(0.5, min(3.0, strength))
+
+    def execute_t0_trade(self, signal_time, signal_type, price, signal_strength):
+        """
+        执行T0交易
+        
         Args:
             signal_time: datetime，信号时间
-            signal_type: str，信号类型，'buy'或'sell'
+            signal_type: str，信号类型，'t0_buy'或't0_sell'
             price: float，交易价格
-            volume: float，交易数量比例（相对于总持仓）
-            position_size: float，当前持仓规模
-
+            signal_strength: float，信号强度
+            
         Returns:
-            dict: 交易记录
+            dict: 交易记录，如果不执行交易则返回None
         """
         # 计算交易数量
-        trade_volume = position_size * volume
-
-        # 限制交易数量在允许范围内
-        min_volume = position_size * self.min_trade_portion
-        max_volume = position_size * self.max_trade_portion
-
-        trade_volume = max(min_volume, min(max_volume, trade_volume))
-
-        # 执行交易
-        if signal_type == 'buy':
-            # 买入
+        base_volume = self.base_position * self.min_trade_portion
+        trade_volume = base_volume * signal_strength
+        
+        # 限制交易数量
+        max_volume = self.base_position * self.max_trade_portion
+        trade_volume = min(trade_volume, max_volume)
+        
+        # 检查是否应该执行交易
+        if signal_type == 't0_buy':
+            # T0买入：增加持仓，但不能超过基础仓位太多
+            if self.current_holdings >= self.base_position * 1.5:  # 持仓已经过多
+                return None
+            
+            # 检查价格是否合适
+            if self.trade_state['last_sell_price'] is not None:
+                if price >= self.trade_state['last_sell_price'] * 0.995:  # 价格没有明显下跌
+                    return None
+            
+            # 执行买入
             cost = trade_volume * price
             self.current_cash -= cost
             self.current_holdings += trade_volume
-        else:
-            # 卖出
+            self.trade_state['last_buy_price'] = price
+            
+        elif signal_type == 't0_sell':
+            # T0卖出：减少持仓，但不能低于基础仓位太多
+            if self.current_holdings <= self.base_position * 0.5:  # 持仓已经过少
+                return None
+            
+            # 检查是否有足够持仓卖出
+            if trade_volume > self.current_holdings:
+                trade_volume = self.current_holdings - self.base_position
+                if trade_volume <= 0:
+                    return None
+            
+            # 检查价格是否合适
+            if self.trade_state['last_buy_price'] is not None:
+                if price <= self.trade_state['last_buy_price'] * 1.005:  # 价格没有明显上涨
+                    return None
+            
+            # 执行卖出
             revenue = trade_volume * price
             self.current_cash += revenue
             self.current_holdings -= trade_volume
-
+            self.trade_state['last_sell_price'] = price
+            
+            # 计算T0收益
+            if self.trade_state['last_buy_price'] is not None:
+                profit = (price - self.trade_state['last_buy_price']) * trade_volume
+                self.t0_profit += profit
+        
         # 记录交易
         trade_record = {
             'time': signal_time,
-            'type': signal_type,
+            'type': signal_type.replace('t0_', ''),  # 'buy' or 'sell'
             'price': price,
             'volume': trade_volume,
             'value': trade_volume * price,
             'holdings_after': self.current_holdings,
-            'cash_after': self.current_cash
+            'cash_after': self.current_cash,
+            'is_t0_trade': True,
+            'signal_strength': signal_strength
         }
-
-        self.trade_history.append(trade_record)
-
-        # 更新交易状态
-        self.trade_state['last_trade_time'] = signal_time
-        self.trade_state['last_trade_price'] = price
-        self.trade_state['last_trade_type'] = signal_type
-        self.trade_state['last_trade_volume'] = trade_volume
-
-        # 添加到未平仓交易
-        if signal_type == 'buy':
-            self.trade_state['open_trades'].append({
-                'time': signal_time,
-                'price': price,
-                'volume': trade_volume
-            })
-        else:
-            # 卖出时，尝试平仓最早的买入交易
-            remaining_volume = trade_volume
-            while remaining_volume > 0 and self.trade_state['open_trades']:
-                oldest_trade = self.trade_state['open_trades'][0]
-                if oldest_trade['volume'] <= remaining_volume:
-                    # 完全平仓
-                    remaining_volume -= oldest_trade['volume']
-                    self.trade_state['open_trades'].pop(0)
-                else:
-                    # 部分平仓
-                    oldest_trade['volume'] -= remaining_volume
-                    remaining_volume = 0
-
+        
+        self.daily_trades.append(trade_record)
         return trade_record
 
-    def check_trade_failure(self, minute_data, trade_time, trade_type, price_level):
+    def force_position_balance(self, current_price, reason="end_of_day"):
         """
-        检查交易是否失败
-
+        强制平衡仓位到基础仓位
+        
         Args:
-            minute_data: DataFrame，分钟级数据
-            trade_time: datetime，交易时间
-            trade_type: str，交易类型，'buy'或'sell'
-            price_level: float，交易价格水平
-
-        Returns:
-            bool: 交易是否失败
-            str: 失败原因
-        """
-        # 获取交易后的数据
-        post_trade_data = minute_data.loc[minute_data.index > trade_time]
-
-        if post_trade_data.empty:
-            return False, "No data after trade"
-
-        # 检查条件A：价格出现相反方向的运动
-        if trade_type == 'buy':
-            price_moved_opposite = post_trade_data['low'].min() < price_level
-        else:
-            price_moved_opposite = post_trade_data['high'].max() > price_level
-
-        # 检查条件B：依据的交易周期背离信号消失
-        if trade_type == 'buy':
-            divergence_disappeared = not post_trade_data['bullish_divergence'].any()
-        else:
-            divergence_disappeared = not post_trade_data['bearish_divergence'].any()
-
-        # 获取5分钟周期数据
-        # 注意：这里假设minute_data是1分钟数据，实际应用中需要根据实际情况调整
-        trade_minute = trade_time.minute
-        next_5min_boundary = trade_time.replace(minute=(trade_minute // 5 + 1) * 5, second=0, microsecond=0)
-
-        # 检查条件C：上一层周期的指标未出现背离
-        # 这里需要等待5分钟周期完成
-        if next_5min_boundary > minute_data.index[-1]:
-            # 5分钟周期尚未完成
-            return False, "Higher timeframe not completed yet"
-
-        # 获取完成的5分钟周期数据
-        five_min_data = minute_data.loc[minute_data.index <= next_5min_boundary].iloc[-5:]
-
-        # 检查5分钟周期是否出现背离
-        if trade_type == 'buy':
-            higher_tf_divergence = five_min_data['bullish_divergence'].any()
-        else:
-            higher_tf_divergence = five_min_data['bearish_divergence'].any()
-
-        # 判断交易是否失败
-        if price_moved_opposite and divergence_disappeared and not higher_tf_divergence:
-            return True, "Price moved opposite, divergence disappeared, and no higher timeframe divergence"
-
-        return False, "Trade not failed"
-
-    def handle_failed_trade(self, trade_record, current_price):
-        """
-        处理失败的交易
-
-        Args:
-            trade_record: dict，交易记录
             current_price: float，当前价格
-
+            reason: str，调整原因
+            
         Returns:
-            dict: 止损交易记录
+            dict: 调整交易记录，如果无需调整则返回None
         """
-        # 执行反向交易进行止损
-        reverse_type = 'sell' if trade_record['type'] == 'buy' else 'buy'
+        position_diff = self.current_holdings - self.base_position
+        
+        if abs(position_diff) < 0.01:  # 差异很小，无需调整
+            return None
+        
+        if position_diff > 0:
+            # 持仓过多，需要卖出
+            trade_record = {
+                'time': datetime.now(),
+                'type': 'sell',
+                'price': current_price,
+                'volume': position_diff,
+                'value': position_diff * current_price,
+                'holdings_after': self.base_position,
+                'cash_after': self.current_cash + position_diff * current_price,
+                'is_forced_adjustment': True,
+                'adjustment_reason': reason
+            }
+            
+            self.current_cash += position_diff * current_price
+            self.current_holdings = self.base_position
+            
+        else:
+            # 持仓过少，需要买入
+            buy_volume = abs(position_diff)
+            cost = buy_volume * current_price
+            
+            trade_record = {
+                'time': datetime.now(),
+                'type': 'buy',
+                'price': current_price,
+                'volume': buy_volume,
+                'value': cost,
+                'holdings_after': self.base_position,
+                'cash_after': self.current_cash - cost,
+                'is_forced_adjustment': True,
+                'adjustment_reason': reason
+            }
+            
+            self.current_cash -= cost
+            self.current_holdings = self.base_position
+        
+        return trade_record
 
-        # 执行止损交易
-        stop_loss_record = self.execute_trade(
-            signal_time=datetime.now(),
-            signal_type=reverse_type,
-            price=current_price,
-            volume=trade_record['volume'],
-            position_size=self.current_holdings
-        )
+    def reset_daily_state(self):
+        """重置日内状态"""
+        self.daily_trades = []
+        self.trade_state = {
+            'last_buy_price': None,
+            'last_sell_price': None,
+            'daily_high': None,
+            'daily_low': None,
+            'position_adjusted_today': False
+        }
 
-        # 标记为止损交易
-        stop_loss_record['is_stop_loss'] = True
-        stop_loss_record['original_trade_time'] = trade_record['time']
-
-        return stop_loss_record
-
-    def get_trade_history(self):
+    def get_daily_performance(self):
         """
-        获取交易历史记录
-
+        获取当日T0交易表现
+        
         Returns:
-            DataFrame: 交易历史记录
+            dict: 当日表现统计
         """
-        return pd.DataFrame(self.trade_history)
-
-    def get_current_holdings(self):
-        """
-        获取当前持仓
-
-        Returns:
-            float: 当前持仓
-        """
-        return self.current_holdings
-
-    def get_current_cash(self):
-        """
-        获取当前现金
-
-        Returns:
-            float: 当前现金
-        """
-        return self.current_cash
+        if not self.daily_trades:
+            return {
+                'trades_count': 0,
+                'buy_count': 0,
+                'sell_count': 0,
+                'total_volume': 0,
+                't0_profit': 0
+            }
+        
+        trades_df = pd.DataFrame(self.daily_trades)
+        
+        return {
+            'trades_count': len(trades_df),
+            'buy_count': len(trades_df[trades_df['type'] == 'buy']),
+            'sell_count': len(trades_df[trades_df['type'] == 'sell']),
+            'total_volume': trades_df['volume'].sum(),
+            't0_profit': self.t0_profit
+        }
