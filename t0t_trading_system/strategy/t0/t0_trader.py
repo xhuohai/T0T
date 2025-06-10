@@ -21,6 +21,11 @@ class ImprovedT0Trader:
         self.price_threshold = config.get("price_threshold", 0.01)  # 价格变动阈值1%
         self.transaction_cost_rate = config.get("transaction_cost_rate", 0.0014)  # 交易成本率0.14%
 
+        # 防重复交易参数
+        self.min_trade_interval = config.get("min_trade_interval", 3)  # 最小交易间隔(分钟)
+        self.max_consecutive_trades = config.get("max_consecutive_trades", 2)  # 最大连续同方向交易次数
+        self.min_price_change = config.get("min_price_change", 0.002)  # 最小价格变动要求0.2%
+
         # T0交易核心参数
         self.base_position = 0  # 基础仓位（日内需要维持的仓位）
         self.current_holdings = 0  # 当前持仓
@@ -33,9 +38,13 @@ class ImprovedT0Trader:
         self.trade_state = {
             'last_buy_price': None,
             'last_sell_price': None,
+            'last_buy_time': None,
+            'last_sell_time': None,
             'daily_high': None,
             'daily_low': None,
-            'position_adjusted_today': False
+            'position_adjusted_today': False,
+            'consecutive_same_direction': 0,  # 连续同方向交易次数
+            'last_trade_direction': None     # 上次交易方向
         }
 
     def set_base_position(self, base_position):
@@ -208,6 +217,48 @@ class ImprovedT0Trader:
         
         return max(0.5, min(3.0, strength))
 
+    def _should_skip_trade(self, signal_type, signal_time, price):
+        """
+        检查是否应该跳过此次交易
+
+        Args:
+            signal_type: str，交易信号类型
+            signal_time: datetime，信号时间
+            price: float，交易价格
+
+        Returns:
+            bool: True表示应该跳过交易
+        """
+        # 检查交易间隔
+        if signal_type == 't0_buy' and self.trade_state['last_buy_time']:
+            time_diff = (signal_time - self.trade_state['last_buy_time']).total_seconds() / 60
+            if time_diff < self.min_trade_interval:
+                return True
+
+        if signal_type == 't0_sell' and self.trade_state['last_sell_time']:
+            time_diff = (signal_time - self.trade_state['last_sell_time']).total_seconds() / 60
+            if time_diff < self.min_trade_interval:
+                return True
+
+        # 检查连续同方向交易
+        current_direction = 'buy' if signal_type == 't0_buy' else 'sell'
+        if (self.trade_state['last_trade_direction'] == current_direction and
+            self.trade_state['consecutive_same_direction'] >= self.max_consecutive_trades):
+            return True
+
+        # 检查价格变动
+        if signal_type == 't0_buy' and self.trade_state['last_buy_price']:
+            price_change = abs(price - self.trade_state['last_buy_price']) / self.trade_state['last_buy_price']
+            if price_change < self.min_price_change:
+                return True
+
+        if signal_type == 't0_sell' and self.trade_state['last_sell_price']:
+            price_change = abs(price - self.trade_state['last_sell_price']) / self.trade_state['last_sell_price']
+            if price_change < self.min_price_change:
+                return True
+
+        return False
+
     def execute_t0_trade(self, signal_time, signal_type, price, signal_strength):
         """
         执行T0交易
@@ -221,10 +272,14 @@ class ImprovedT0Trader:
         Returns:
             dict: 交易记录，如果不执行交易则返回None
         """
+        # 防重复交易检查
+        if self._should_skip_trade(signal_type, signal_time, price):
+            return None
+
         # 计算交易数量
         base_volume = self.base_position * self.min_trade_portion
         trade_volume = base_volume * signal_strength
-        
+
         # 限制交易数量
         max_volume = self.base_position * self.max_trade_portion
         trade_volume = min(trade_volume, max_volume)
@@ -249,6 +304,14 @@ class ImprovedT0Trader:
             self.current_holdings += trade_volume
             self.total_transaction_costs += transaction_cost
             self.trade_state['last_buy_price'] = price
+            self.trade_state['last_buy_time'] = signal_time
+
+            # 更新连续交易计数
+            if self.trade_state['last_trade_direction'] == 'buy':
+                self.trade_state['consecutive_same_direction'] += 1
+            else:
+                self.trade_state['consecutive_same_direction'] = 1
+            self.trade_state['last_trade_direction'] = 'buy'
             
         elif signal_type == 't0_sell':
             # T0卖出：减少持仓，但不能低于基础仓位太多
@@ -275,6 +338,14 @@ class ImprovedT0Trader:
             self.current_holdings -= trade_volume
             self.total_transaction_costs += transaction_cost
             self.trade_state['last_sell_price'] = price
+            self.trade_state['last_sell_time'] = signal_time
+
+            # 更新连续交易计数
+            if self.trade_state['last_trade_direction'] == 'sell':
+                self.trade_state['consecutive_same_direction'] += 1
+            else:
+                self.trade_state['consecutive_same_direction'] = 1
+            self.trade_state['last_trade_direction'] = 'sell'
 
             # 计算T0收益（扣除交易成本）
             if self.trade_state['last_buy_price'] is not None:
@@ -379,9 +450,13 @@ class ImprovedT0Trader:
         self.trade_state = {
             'last_buy_price': None,
             'last_sell_price': None,
+            'last_buy_time': None,
+            'last_sell_time': None,
             'daily_high': None,
             'daily_low': None,
-            'position_adjusted_today': False
+            'position_adjusted_today': False,
+            'consecutive_same_direction': 0,
+            'last_trade_direction': None
         }
 
     def get_daily_performance(self):

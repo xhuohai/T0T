@@ -15,9 +15,9 @@ def analyze_improved_t0_results():
     print("=" * 60)
     
     # 读取最新数据
-    trades_df = pd.read_csv('results/improved_t0_trades_20250610_111204.csv')
-    equity_df = pd.read_csv('results/improved_t0_equity_20250610_111204.csv')
-    performance_df = pd.read_csv('results/improved_t0_performance_20250610_111204.csv')
+    trades_df = pd.read_csv('results/improved_t0_trades_20250610_162128.csv')
+    equity_df = pd.read_csv('results/improved_t0_equity_20250610_162128.csv')
+    performance_df = pd.read_csv('results/improved_t0_performance_20250610_162128.csv')
     
     # 转换时间列
     trades_df['time'] = pd.to_datetime(trades_df['time'])
@@ -172,7 +172,7 @@ def analyze_improved_t0_results():
 def create_performance_chart():
     """创建表现图表"""
     try:
-        equity_df = pd.read_csv('results/improved_t0_equity_20250610_111204.csv')
+        equity_df = pd.read_csv('results/improved_t0_equity_20250610_162128.csv')
         equity_df['date'] = pd.to_datetime(equity_df['date'])
         
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))

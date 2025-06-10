@@ -81,11 +81,11 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
 
     # 创建子图
     fig = make_subplots(
-        rows=4, cols=1,
+        rows=5, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.03,
-        subplot_titles=('价格走势与交易信号', '成交量', '持仓变化', '现金流变化'),
-        row_heights=[0.5, 0.15, 0.15, 0.2]
+        vertical_spacing=0.02,
+        subplot_titles=('上证指数走势与交易信号', '价格归一化对比', '成交量', '持仓变化', '现金流变化'),
+        row_heights=[0.4, 0.2, 0.15, 0.15, 0.1]
     )
     
     # 价格K线图
@@ -131,6 +131,44 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
             ),
             row=1, col=1
         )
+
+    # 价格归一化对比（第二个子图）
+    if len(price_filtered) > 0:
+        # 计算归一化价格（以第一个价格为基准）
+        base_price = price_filtered['close'].iloc[0]
+        price_filtered['normalized_price'] = (price_filtered['close'] / base_price - 1) * 100
+
+        fig.add_trace(
+            go.Scatter(
+                x=price_filtered['datetime'],
+                y=price_filtered['normalized_price'],
+                mode='lines',
+                name='上证指数涨跌幅(%)',
+                line=dict(color='red', width=2)
+            ),
+            row=2, col=1
+        )
+
+        # 如果有交易记录，计算策略收益曲线
+        if not trades_filtered.empty:
+            # 计算累计收益率
+            trades_filtered = trades_filtered.sort_values('time')
+            trades_filtered['cumulative_pnl'] = trades_filtered['net_value'].cumsum()
+
+            # 假设初始资金为100万
+            initial_capital = 1000000
+            trades_filtered['strategy_return'] = trades_filtered['cumulative_pnl'] / initial_capital * 100
+
+            fig.add_trace(
+                go.Scatter(
+                    x=trades_filtered['time'],
+                    y=trades_filtered['strategy_return'],
+                    mode='lines',
+                    name='T0策略收益率(%)',
+                    line=dict(color='green', width=2)
+                ),
+                row=2, col=1
+            )
     
     # 添加买入信号
     buy_trades = trades_filtered[trades_filtered['type'] == 'buy']
@@ -185,7 +223,7 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
             marker_color='lightblue',
             opacity=0.7
         ),
-        row=2, col=1
+        row=3, col=1
     )
     
     # 持仓变化
@@ -199,7 +237,7 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
                 line=dict(color='orange', width=2),
                 marker=dict(size=4)
             ),
-            row=3, col=1
+            row=4, col=1
         )
 
     # 现金流变化
@@ -213,7 +251,7 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
                 line=dict(color='purple', width=2),
                 marker=dict(size=4)
             ),
-            row=4, col=1
+            row=5, col=1
         )
 
         # 添加交易成本累计
@@ -228,7 +266,7 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
                     line=dict(color='red', width=1, dash='dash'),
                     yaxis='y5'
                 ),
-                row=4, col=1
+                row=5, col=1
             )
     
     # 更新布局
@@ -242,9 +280,10 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
     
     # 更新y轴标签
     fig.update_yaxes(title_text="价格", row=1, col=1)
-    fig.update_yaxes(title_text="成交量", row=2, col=1)
-    fig.update_yaxes(title_text="持仓", row=3, col=1)
-    fig.update_yaxes(title_text="现金", row=4, col=1)
+    fig.update_yaxes(title_text="收益率(%)", row=2, col=1)
+    fig.update_yaxes(title_text="成交量", row=3, col=1)
+    fig.update_yaxes(title_text="持仓", row=4, col=1)
+    fig.update_yaxes(title_text="现金", row=5, col=1)
     
     return fig
 

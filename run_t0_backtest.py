@@ -47,7 +47,10 @@ def load_config():
             'min_trade_portion': 0.1,    # 最小交易比例10%
             'max_trade_portion': 0.3,    # 最大交易比例30%
             'price_threshold': 0.01,     # 价格变动阈值1%
-            'transaction_cost_rate': 0.0014  # 交易成本率0.14%
+            'transaction_cost_rate': 0.0014,  # 交易成本率0.14%
+            'min_trade_interval': 5,     # 最小交易间隔5分钟
+            'max_consecutive_trades': 2, # 最大连续同方向交易2次
+            'min_price_change': 0.003    # 最小价格变动要求0.3%
         },
         'symbols': ['SH600036']  # 使用招商银行进行测试
     }
