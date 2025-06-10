@@ -65,27 +65,27 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
     """创建带有交易信号的价格图表"""
     # 过滤数据到指定日期范围
     start_date, end_date = date_range
-    
+
     price_filtered = price_data[
-        (price_data['datetime'].dt.date >= start_date) & 
+        (price_data['datetime'].dt.date >= start_date) &
         (price_data['datetime'].dt.date <= end_date)
     ].copy()
-    
+
     trades_filtered = trades_data[
-        (trades_data['time'].dt.date >= start_date) & 
+        (trades_data['time'].dt.date >= start_date) &
         (trades_data['time'].dt.date <= end_date)
     ].copy()
-    
+
     if price_filtered.empty:
         return None
-    
+
     # 创建子图
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.05,
-        subplot_titles=('价格走势与交易信号', '成交量', '持仓变化'),
-        row_heights=[0.6, 0.2, 0.2]
+        vertical_spacing=0.03,
+        subplot_titles=('价格走势与交易信号', '成交量', '持仓变化', '现金流变化'),
+        row_heights=[0.5, 0.15, 0.15, 0.2]
     )
     
     # 价格K线图
@@ -96,12 +96,41 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
             high=price_filtered['high'],
             low=price_filtered['low'],
             close=price_filtered['close'],
-            name='价格',
+            name='上证指数',
             increasing_line_color='red',
             decreasing_line_color='green'
         ),
         row=1, col=1
     )
+
+    # 添加价格移动平均线
+    if len(price_filtered) > 20:
+        price_filtered['ma20'] = price_filtered['close'].rolling(window=20).mean()
+        fig.add_trace(
+            go.Scatter(
+                x=price_filtered['datetime'],
+                y=price_filtered['ma20'],
+                mode='lines',
+                name='MA20',
+                line=dict(color='blue', width=1),
+                opacity=0.7
+            ),
+            row=1, col=1
+        )
+
+    if len(price_filtered) > 60:
+        price_filtered['ma60'] = price_filtered['close'].rolling(window=60).mean()
+        fig.add_trace(
+            go.Scatter(
+                x=price_filtered['datetime'],
+                y=price_filtered['ma60'],
+                mode='lines',
+                name='MA60',
+                line=dict(color='orange', width=1),
+                opacity=0.7
+            ),
+            row=1, col=1
+        )
     
     # 添加买入信号
     buy_trades = trades_filtered[trades_filtered['type'] == 'buy']
@@ -172,6 +201,35 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
             ),
             row=3, col=1
         )
+
+    # 现金流变化
+    if not trades_filtered.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=trades_filtered['time'],
+                y=trades_filtered['cash_after'],
+                mode='lines+markers',
+                name='现金余额',
+                line=dict(color='purple', width=2),
+                marker=dict(size=4)
+            ),
+            row=4, col=1
+        )
+
+        # 添加交易成本累计
+        if 'transaction_cost' in trades_filtered.columns:
+            cumulative_costs = trades_filtered['transaction_cost'].cumsum()
+            fig.add_trace(
+                go.Scatter(
+                    x=trades_filtered['time'],
+                    y=cumulative_costs,
+                    mode='lines',
+                    name='累计交易成本',
+                    line=dict(color='red', width=1, dash='dash'),
+                    yaxis='y5'
+                ),
+                row=4, col=1
+            )
     
     # 更新布局
     fig.update_layout(
@@ -186,6 +244,7 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
     fig.update_yaxes(title_text="价格", row=1, col=1)
     fig.update_yaxes(title_text="成交量", row=2, col=1)
     fig.update_yaxes(title_text="持仓", row=3, col=1)
+    fig.update_yaxes(title_text="现金", row=4, col=1)
     
     return fig
 
@@ -280,9 +339,19 @@ def calculate_performance_metrics(equity_data, trades_data):
     sell_trades = len(trades_data[trades_data['type'] == 'sell'])
     t0_trades = len(trades_data[trades_data.get('is_t0_trade', False) == True])
     forced_trades = len(trades_data[trades_data.get('is_forced_adjustment', False) == True])
+
+    # 交易成本统计
+    total_transaction_costs = 0
+    if 'transaction_cost' in trades_data.columns:
+        total_transaction_costs = trades_data['transaction_cost'].sum()
+
+    # 净收益计算（扣除交易成本）
+    gross_return = total_return
+    net_return = gross_return - (total_transaction_costs / initial_equity * 100)
     
     return {
         'total_return': total_return,
+        'net_return': net_return,
         'annual_return': annual_return,
         'max_drawdown': max_drawdown,
         'sharpe_ratio': sharpe_ratio,
@@ -292,6 +361,7 @@ def calculate_performance_metrics(equity_data, trades_data):
         'sell_trades': sell_trades,
         't0_trades': t0_trades,
         'forced_trades': forced_trades,
+        'total_transaction_costs': total_transaction_costs,
         'initial_equity': initial_equity,
         'final_equity': final_equity
     }
@@ -345,7 +415,7 @@ def main():
         st.metric(
             label="总收益率",
             value=f"{metrics['total_return']:.2f}%",
-            delta=f"年化: {metrics['annual_return']:.2f}%"
+            delta=f"净收益: {metrics['net_return']:.2f}%"
         )
     
     with col2:
@@ -364,9 +434,9 @@ def main():
     
     with col4:
         st.metric(
-            label="T0交易占比",
-            value=f"{metrics['t0_trades']/metrics['total_trades']*100:.1f}%" if metrics['total_trades'] > 0 else "0%",
-            delta=f"强制调整: {metrics['forced_trades']}"
+            label="交易成本",
+            value=f"{metrics['total_transaction_costs']:,.0f}",
+            delta=f"占比: {metrics['total_transaction_costs']/metrics['initial_equity']*100:.2f}%"
         )
     
     # 权益曲线
@@ -403,7 +473,10 @@ def main():
         st.write(f"- 最终权益: {metrics['final_equity']:,.2f}")
         st.write(f"- 绝对收益: {metrics['final_equity'] - metrics['initial_equity']:,.2f}")
         st.write(f"- 总收益率: {metrics['total_return']:.2f}%")
+        st.write(f"- 净收益率: {metrics['net_return']:.2f}%")
         st.write(f"- 年化收益率: {metrics['annual_return']:.2f}%")
+        st.write(f"- 交易成本: {metrics['total_transaction_costs']:,.2f}")
+        st.write(f"- 成本占比: {metrics['total_transaction_costs']/metrics['initial_equity']*100:.2f}%")
     
     # 交易记录表
     st.header("📋 交易记录")
@@ -419,24 +492,43 @@ def main():
     
     # 显示交易记录
     if not filtered_trades.empty:
+        # 选择要显示的列
+        display_columns = ['time', 'type', 'price', 'volume', 'value']
+        if 'transaction_cost' in filtered_trades.columns:
+            display_columns.append('transaction_cost')
+        if 'net_value' in filtered_trades.columns:
+            display_columns.append('net_value')
+        display_columns.append('holdings_after')
+
         # 格式化显示
-        display_trades = filtered_trades[['time', 'type', 'price', 'volume', 'value', 'holdings_after']].copy()
+        display_trades = filtered_trades[display_columns].copy()
         display_trades['time'] = display_trades['time'].dt.strftime('%Y-%m-%d %H:%M:%S')
         display_trades['price'] = display_trades['price'].round(2)
         display_trades['volume'] = display_trades['volume'].round(3)
         display_trades['value'] = display_trades['value'].round(2)
+        if 'transaction_cost' in display_trades.columns:
+            display_trades['transaction_cost'] = display_trades['transaction_cost'].round(2)
+        if 'net_value' in display_trades.columns:
+            display_trades['net_value'] = display_trades['net_value'].round(2)
         display_trades['holdings_after'] = display_trades['holdings_after'].round(3)
         
+        # 动态构建列配置
+        column_config = {
+            'time': '时间',
+            'type': '类型',
+            'price': '价格',
+            'volume': '数量',
+            'value': '金额',
+            'holdings_after': '持仓'
+        }
+        if 'transaction_cost' in display_trades.columns:
+            column_config['transaction_cost'] = '交易成本'
+        if 'net_value' in display_trades.columns:
+            column_config['net_value'] = '净值变化'
+
         st.dataframe(
             display_trades,
-            column_config={
-                'time': '时间',
-                'type': '类型',
-                'price': '价格',
-                'volume': '数量',
-                'value': '金额',
-                'holdings_after': '持仓'
-            },
+            column_config=column_config,
             use_container_width=True
         )
     else:

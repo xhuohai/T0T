@@ -14,10 +14,10 @@ def analyze_improved_t0_results():
     print("改进T0交易策略结果分析")
     print("=" * 60)
     
-    # 读取数据
-    trades_df = pd.read_csv('results/improved_t0_trades_20250609_173309.csv')
-    equity_df = pd.read_csv('results/improved_t0_equity_20250609_173309.csv')
-    performance_df = pd.read_csv('results/improved_t0_performance_20250609_173309.csv')
+    # 读取最新数据
+    trades_df = pd.read_csv('results/improved_t0_trades_20250610_111204.csv')
+    equity_df = pd.read_csv('results/improved_t0_equity_20250610_111204.csv')
+    performance_df = pd.read_csv('results/improved_t0_performance_20250610_111204.csv')
     
     # 转换时间列
     trades_df['time'] = pd.to_datetime(trades_df['time'])
@@ -46,6 +46,14 @@ def analyze_improved_t0_results():
     print(f"最大交易价值: {trades_df['value'].max():,.2f}")
     print(f"最小交易价值: {trades_df['value'].min():,.2f}")
     print(f"总交易价值: {trades_df['value'].sum():,.2f}")
+
+    # 交易成本分析
+    if 'transaction_cost' in trades_df.columns:
+        total_costs = trades_df['transaction_cost'].sum()
+        print(f"\n交易成本分析:")
+        print(f"总交易成本: {total_costs:,.2f}")
+        print(f"平均每笔成本: {total_costs/len(trades_df):,.2f}")
+        print(f"成本占交易价值比例: {total_costs/trades_df['value'].sum()*100:.3f}%")
     
     print("\n2. 收益分析")
     print("-" * 30)
@@ -164,7 +172,7 @@ def analyze_improved_t0_results():
 def create_performance_chart():
     """创建表现图表"""
     try:
-        equity_df = pd.read_csv('results/improved_t0_equity_20250609_173309.csv')
+        equity_df = pd.read_csv('results/improved_t0_equity_20250610_111204.csv')
         equity_df['date'] = pd.to_datetime(equity_df['date'])
         
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))

@@ -11,7 +11,7 @@ class ImprovedT0Trader:
     def __init__(self, config):
         """
         初始化改进的T0交易器
-        
+
         Args:
             config: T0交易配置
         """
@@ -19,13 +19,15 @@ class ImprovedT0Trader:
         self.min_trade_portion = config.get("min_trade_portion", 1/8)  # 最小交易比例
         self.max_trade_portion = config.get("max_trade_portion", 1/3)  # 最大交易比例
         self.price_threshold = config.get("price_threshold", 0.01)  # 价格变动阈值1%
-        
+        self.transaction_cost_rate = config.get("transaction_cost_rate", 0.0014)  # 交易成本率0.14%
+
         # T0交易核心参数
         self.base_position = 0  # 基础仓位（日内需要维持的仓位）
         self.current_holdings = 0  # 当前持仓
         self.current_cash = 0  # 当前现金
         self.daily_trades = []  # 当日交易记录
         self.t0_profit = 0  # T0交易累计收益
+        self.total_transaction_costs = 0  # 累计交易成本
         
         # 交易状态
         self.trade_state = {
@@ -240,8 +242,12 @@ class ImprovedT0Trader:
             
             # 执行买入
             cost = trade_volume * price
-            self.current_cash -= cost
+            transaction_cost = cost * self.transaction_cost_rate
+            total_cost = cost + transaction_cost
+
+            self.current_cash -= total_cost
             self.current_holdings += trade_volume
+            self.total_transaction_costs += transaction_cost
             self.trade_state['last_buy_price'] = price
             
         elif signal_type == 't0_sell':
@@ -262,22 +268,34 @@ class ImprovedT0Trader:
             
             # 执行卖出
             revenue = trade_volume * price
-            self.current_cash += revenue
+            transaction_cost = revenue * self.transaction_cost_rate
+            net_revenue = revenue - transaction_cost
+
+            self.current_cash += net_revenue
             self.current_holdings -= trade_volume
+            self.total_transaction_costs += transaction_cost
             self.trade_state['last_sell_price'] = price
-            
-            # 计算T0收益
+
+            # 计算T0收益（扣除交易成本）
             if self.trade_state['last_buy_price'] is not None:
-                profit = (price - self.trade_state['last_buy_price']) * trade_volume
-                self.t0_profit += profit
+                gross_profit = (price - self.trade_state['last_buy_price']) * trade_volume
+                # 买入和卖出都有交易成本
+                total_costs = (self.trade_state['last_buy_price'] * trade_volume + revenue) * self.transaction_cost_rate
+                net_profit = gross_profit - total_costs
+                self.t0_profit += net_profit
         
         # 记录交易
+        trade_value = trade_volume * price
+        transaction_cost = trade_value * self.transaction_cost_rate
+
         trade_record = {
             'time': signal_time,
             'type': signal_type.replace('t0_', ''),  # 'buy' or 'sell'
             'price': price,
             'volume': trade_volume,
-            'value': trade_volume * price,
+            'value': trade_value,
+            'transaction_cost': transaction_cost,
+            'net_value': trade_value - transaction_cost if signal_type == 't0_sell' else -(trade_value + transaction_cost),
             'holdings_after': self.current_holdings,
             'cash_after': self.current_cash,
             'is_t0_trade': True,
@@ -287,14 +305,15 @@ class ImprovedT0Trader:
         self.daily_trades.append(trade_record)
         return trade_record
 
-    def force_position_balance(self, current_price, reason="end_of_day"):
+    def force_position_balance(self, current_price, current_time=None, reason="end_of_day"):
         """
         强制平衡仓位到基础仓位
-        
+
         Args:
             current_price: float，当前价格
+            current_time: datetime，当前交易时间
             reason: str，调整原因
-            
+
         Returns:
             dict: 调整交易记录，如果无需调整则返回None
         """
@@ -305,40 +324,52 @@ class ImprovedT0Trader:
         
         if position_diff > 0:
             # 持仓过多，需要卖出
+            revenue = position_diff * current_price
+            transaction_cost = revenue * self.transaction_cost_rate
+            net_revenue = revenue - transaction_cost
+
             trade_record = {
-                'time': datetime.now(),
+                'time': current_time if current_time is not None else datetime.now(),
                 'type': 'sell',
                 'price': current_price,
                 'volume': position_diff,
-                'value': position_diff * current_price,
+                'value': revenue,
+                'transaction_cost': transaction_cost,
+                'net_value': net_revenue,
                 'holdings_after': self.base_position,
-                'cash_after': self.current_cash + position_diff * current_price,
+                'cash_after': self.current_cash + net_revenue,
                 'is_forced_adjustment': True,
                 'adjustment_reason': reason
             }
-            
-            self.current_cash += position_diff * current_price
+
+            self.current_cash += net_revenue
             self.current_holdings = self.base_position
+            self.total_transaction_costs += transaction_cost
             
         else:
             # 持仓过少，需要买入
             buy_volume = abs(position_diff)
             cost = buy_volume * current_price
-            
+            transaction_cost = cost * self.transaction_cost_rate
+            total_cost = cost + transaction_cost
+
             trade_record = {
-                'time': datetime.now(),
+                'time': current_time if current_time is not None else datetime.now(),
                 'type': 'buy',
                 'price': current_price,
                 'volume': buy_volume,
                 'value': cost,
+                'transaction_cost': transaction_cost,
+                'net_value': -total_cost,
                 'holdings_after': self.base_position,
-                'cash_after': self.current_cash - cost,
+                'cash_after': self.current_cash - total_cost,
                 'is_forced_adjustment': True,
                 'adjustment_reason': reason
             }
-            
-            self.current_cash -= cost
+
+            self.current_cash -= total_cost
             self.current_holdings = self.base_position
+            self.total_transaction_costs += transaction_cost
         
         return trade_record
 

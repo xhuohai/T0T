@@ -46,7 +46,8 @@ def load_config():
         't0_trading': {
             'min_trade_portion': 0.1,    # 最小交易比例10%
             'max_trade_portion': 0.3,    # 最大交易比例30%
-            'price_threshold': 0.01      # 价格变动阈值1%
+            'price_threshold': 0.01,     # 价格变动阈值1%
+            'transaction_cost_rate': 0.0014  # 交易成本率0.14%
         },
         'symbols': ['SH600036']  # 使用招商银行进行测试
     }
@@ -163,7 +164,8 @@ def run_improved_t0_backtest():
         # 收盘前强制平衡仓位
         if len(day_data_with_signals) > 0:
             last_price = day_data_with_signals['close'].iloc[-1]
-            balance_trade = t0_trader.force_position_balance(last_price, "end_of_day")
+            last_time = day_data_with_signals.index[-1]
+            balance_trade = t0_trader.force_position_balance(last_price, last_time, "end_of_day")
             if balance_trade:
                 all_trades.append(balance_trade)
         
