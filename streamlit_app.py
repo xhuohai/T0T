@@ -8,7 +8,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 import os
 from datetime import datetime, timedelta
@@ -50,26 +49,115 @@ def load_backtest_results():
     
     return trades_df, equity_df, latest_trade_file
 
-@st.cache_data
-def load_price_data():
-    """加载价格数据"""
-    # 使用修复后的完整数据 - 招商银行
-    data_file = "data/fixed_processed/SH600036.csv"
-    benchmark_file = "data/fixed_processed/SH000001.csv"  # 上证指数作为基准
-    if os.path.exists(data_file):
-        df = pd.read_csv(data_file)
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        return df
-    return None
+def get_stock_name(symbol):
+    """根据股票代码获取股票名称"""
+    stock_names = {
+        'SH600036': '招商银行',
+        'SH600000': '浦发银行',
+        'SH600519': '贵州茅台',
+        'SH600030': '中信证券',
+        'SH600887': '伊利股份',
+        'SH600276': '恒瑞医药',
+        'SH600585': '海螺水泥',
+        'SH600104': '上汽集团',
+        'SH600050': '中国联通',
+        'SH000001': '上证指数'
+    }
+    return stock_names.get(symbol, symbol)
 
-def create_price_chart_with_signals(price_data, trades_data, date_range):
-    """创建带有交易信号的价格图表"""
+def detect_target_symbol():
+    """从最新的回测结果中检测目标标的代码"""
+    try:
+        import glob
+        import json
+
+        # 方法1: 检查元数据文件
+        metadata_files = glob.glob("results/backtest_metadata_*.json")
+        if metadata_files:
+            latest_metadata = max(metadata_files)
+            try:
+                with open(latest_metadata, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                    return metadata.get('symbol', 'SH600036')
+            except:
+                pass
+
+        # 方法2: 检查最新的交易记录文件中的symbol列
+        trade_files = glob.glob("results/improved_t0_trades_*.csv")
+        if trade_files:
+            latest_file = max(trade_files)
+            try:
+                # 只读取第一行数据来检查symbol列
+                df_sample = pd.read_csv(latest_file, nrows=1)
+                if 'symbol' in df_sample.columns:
+                    return df_sample['symbol'].iloc[0]
+            except:
+                pass
+
+        # 方法3: 根据文件修改时间推断（备用方案）
+        data_dir = "data/fixed_processed"
+        if os.path.exists(data_dir):
+            available_symbols = []
+            for file in os.listdir(data_dir):
+                if file.endswith('.csv') and file.startswith('SH') and file != 'SH000001.csv':
+                    symbol = file.replace('.csv', '')
+                    available_symbols.append(symbol)
+
+            if available_symbols:
+                # 返回第一个可用的标的
+                return sorted(available_symbols)[0]
+
+        return 'SH600036'  # 默认返回招商银行
+    except Exception as e:
+        print(f"检测标的时出错: {e}")
+        return 'SH600036'  # 出错时返回默认值
+
+@st.cache_data
+def load_price_data(target_symbol=None):
+    """加载价格数据 - 动态加载目标标的和上证指数"""
+    if target_symbol is None:
+        target_symbol = detect_target_symbol()
+
+    # 使用修复后的完整数据
+    target_file = f"data/fixed_processed/{target_symbol}.csv"
+    index_file = "data/fixed_processed/SH000001.csv"  # 上证指数作为基准
+
+    target_data = None
+    index_data = None
+
+    if os.path.exists(target_file):
+        target_data = pd.read_csv(target_file)
+        target_data['datetime'] = pd.to_datetime(target_data['datetime'])
+
+    if os.path.exists(index_file):
+        index_data = pd.read_csv(index_file)
+        index_data['datetime'] = pd.to_datetime(index_data['datetime'])
+
+    return target_data, index_data, target_symbol
+
+def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, target_symbol):
+    """创建带有交易信号的价格图表 - 分离显示目标标的和上证指数"""
+    # 解包数据
+    target_data, index_data = price_data_tuple
+
+    if target_data is None or index_data is None:
+        st.error("价格数据加载失败")
+        return None
+
+    # 获取股票名称
+    target_name = get_stock_name(target_symbol)
+
     # 过滤数据到指定日期范围
     start_date, end_date = date_range
 
-    price_filtered = price_data[
-        (price_data['datetime'].dt.date >= start_date) &
-        (price_data['datetime'].dt.date <= end_date)
+    target_filtered = target_data[
+        (target_data['datetime'].dt.date >= start_date) &
+        (target_data['datetime'].dt.date <= end_date)
+    ].copy()
+
+    index_filtered = index_data[
+        (index_data['datetime'].dt.date >= start_date) &
+        (index_data['datetime'].dt.date <= end_date)
     ].copy()
 
     trades_filtered = trades_data[
@@ -77,77 +165,144 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
         (trades_data['time'].dt.date <= end_date)
     ].copy()
 
-    if price_filtered.empty:
+    if target_filtered.empty or index_filtered.empty:
         return None
 
-    # 创建子图
+    # 创建子图 - 分离显示目标标的和上证指数
     fig = make_subplots(
         rows=5, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.02,
-        subplot_titles=('上证指数走势与交易信号', '价格归一化对比', '成交量', '持仓变化', '现金流变化'),
-        row_heights=[0.4, 0.2, 0.15, 0.15, 0.1]
+        vertical_spacing=0.03,
+        subplot_titles=(
+            f'{target_name}价格走势与交易信号',
+            '上证指数走势',
+            f'收益率对比 ({target_name} vs 上证指数 vs T0策略)',
+            '持仓变化',
+            '现金流变化'
+        ),
+        row_heights=[0.3, 0.25, 0.25, 0.1, 0.1]
     )
-    
-    # 价格K线图
+
+    # 第一行：目标标的价格K线图
     fig.add_trace(
         go.Candlestick(
-            x=price_filtered['datetime'],
-            open=price_filtered['open'],
-            high=price_filtered['high'],
-            low=price_filtered['low'],
-            close=price_filtered['close'],
-            name='上证指数',
+            x=target_filtered['datetime'],
+            open=target_filtered['open'],
+            high=target_filtered['high'],
+            low=target_filtered['low'],
+            close=target_filtered['close'],
+            name=target_name,
             increasing_line_color='red',
             decreasing_line_color='green'
         ),
         row=1, col=1
     )
 
-    # 添加价格移动平均线
-    if len(price_filtered) > 20:
-        price_filtered['ma20'] = price_filtered['close'].rolling(window=20).mean()
+    # 第二行：上证指数K线图
+    fig.add_trace(
+        go.Candlestick(
+            x=index_filtered['datetime'],
+            open=index_filtered['open'],
+            high=index_filtered['high'],
+            low=index_filtered['low'],
+            close=index_filtered['close'],
+            name='上证指数',
+            increasing_line_color='darkred',
+            decreasing_line_color='darkgreen'
+        ),
+        row=2, col=1
+    )
+
+    # 添加目标标的移动平均线
+    if len(target_filtered) > 20:
+        target_filtered['ma20'] = target_filtered['close'].rolling(window=20).mean()
         fig.add_trace(
             go.Scatter(
-                x=price_filtered['datetime'],
-                y=price_filtered['ma20'],
+                x=target_filtered['datetime'],
+                y=target_filtered['ma20'],
                 mode='lines',
-                name='MA20',
+                name=f'{target_name} MA20',
                 line=dict(color='blue', width=1),
                 opacity=0.7
             ),
             row=1, col=1
         )
 
-    if len(price_filtered) > 60:
-        price_filtered['ma60'] = price_filtered['close'].rolling(window=60).mean()
+    if len(target_filtered) > 60:
+        target_filtered['ma60'] = target_filtered['close'].rolling(window=60).mean()
         fig.add_trace(
             go.Scatter(
-                x=price_filtered['datetime'],
-                y=price_filtered['ma60'],
+                x=target_filtered['datetime'],
+                y=target_filtered['ma60'],
                 mode='lines',
-                name='MA60',
+                name=f'{target_name} MA60',
                 line=dict(color='orange', width=1),
                 opacity=0.7
             ),
             row=1, col=1
         )
 
-    # 价格归一化对比（第二个子图）
-    if len(price_filtered) > 0:
-        # 计算归一化价格（以第一个价格为基准）
-        base_price = price_filtered['close'].iloc[0]
-        price_filtered['normalized_price'] = (price_filtered['close'] / base_price - 1) * 100
-
+    # 添加上证指数移动平均线
+    if len(index_filtered) > 20:
+        index_filtered['ma20'] = index_filtered['close'].rolling(window=20).mean()
         fig.add_trace(
             go.Scatter(
-                x=price_filtered['datetime'],
-                y=price_filtered['normalized_price'],
+                x=index_filtered['datetime'],
+                y=index_filtered['ma20'],
+                mode='lines',
+                name='Index MA20',
+                line=dict(color='lightblue', width=1),
+                opacity=0.7
+            ),
+            row=2, col=1
+        )
+
+    if len(index_filtered) > 60:
+        index_filtered['ma60'] = index_filtered['close'].rolling(window=60).mean()
+        fig.add_trace(
+            go.Scatter(
+                x=index_filtered['datetime'],
+                y=index_filtered['ma60'],
+                mode='lines',
+                name='Index MA60',
+                line=dict(color='lightyellow', width=1),
+                opacity=0.7
+            ),
+            row=2, col=1
+        )
+
+    # 价格归一化对比（第三行）
+    if len(target_filtered) > 0 and len(index_filtered) > 0:
+        # 计算目标标的归一化价格
+        target_base_price = target_filtered['close'].iloc[0]
+        target_filtered['normalized_price'] = (target_filtered['close'] / target_base_price - 1) * 100
+
+        # 计算上证指数归一化价格
+        index_base_price = index_filtered['close'].iloc[0]
+        index_filtered['normalized_price'] = (index_filtered['close'] / index_base_price - 1) * 100
+
+        # 目标标的归一化曲线
+        fig.add_trace(
+            go.Scatter(
+                x=target_filtered['datetime'],
+                y=target_filtered['normalized_price'],
+                mode='lines',
+                name=f'{target_name}涨跌幅(%)',
+                line=dict(color='blue', width=2)
+            ),
+            row=3, col=1
+        )
+
+        # 上证指数归一化曲线
+        fig.add_trace(
+            go.Scatter(
+                x=index_filtered['datetime'],
+                y=index_filtered['normalized_price'],
                 mode='lines',
                 name='上证指数涨跌幅(%)',
                 line=dict(color='red', width=2)
             ),
-            row=2, col=1
+            row=3, col=1
         )
 
         # 如果有交易记录，计算策略收益曲线
@@ -166,9 +321,9 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
                     y=trades_filtered['strategy_return'],
                     mode='lines',
                     name='T0策略收益率(%)',
-                    line=dict(color='green', width=2)
+                    line=dict(color='green', width=3, dash='dash')
                 ),
-                row=2, col=1
+                row=3, col=1
             )
     
     # 添加买入信号
@@ -215,19 +370,10 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
             row=1, col=1
         )
     
-    # 成交量
-    fig.add_trace(
-        go.Bar(
-            x=price_filtered['datetime'],
-            y=price_filtered['volume'],
-            name='成交量',
-            marker_color='lightblue',
-            opacity=0.7
-        ),
-        row=3, col=1
-    )
+    # 成交量 - 显示招商银行成交量（第四行已经被归一化对比占用，这里不显示成交量）
+    # 如果需要成交量，可以在其他地方显示
     
-    # 持仓变化
+    # 持仓变化（第4行，主轴）
     if not trades_filtered.empty:
         fig.add_trace(
             go.Scatter(
@@ -241,7 +387,7 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
             row=4, col=1
         )
 
-    # 现金流变化
+    # 现金流变化（第5行）
     if not trades_filtered.empty:
         fig.add_trace(
             go.Scatter(
@@ -254,21 +400,6 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
             ),
             row=5, col=1
         )
-
-        # 添加交易成本累计
-        if 'transaction_cost' in trades_filtered.columns:
-            cumulative_costs = trades_filtered['transaction_cost'].cumsum()
-            fig.add_trace(
-                go.Scatter(
-                    x=trades_filtered['time'],
-                    y=cumulative_costs,
-                    mode='lines',
-                    name='累计交易成本',
-                    line=dict(color='red', width=1, dash='dash'),
-                    yaxis='y5'
-                ),
-                row=5, col=1
-            )
     
     # 更新布局
     fig.update_layout(
@@ -280,11 +411,11 @@ def create_price_chart_with_signals(price_data, trades_data, date_range):
     )
     
     # 更新y轴标签
-    fig.update_yaxes(title_text="价格", row=1, col=1)
-    fig.update_yaxes(title_text="收益率(%)", row=2, col=1)
-    fig.update_yaxes(title_text="成交量", row=3, col=1)
-    fig.update_yaxes(title_text="持仓", row=4, col=1)
-    fig.update_yaxes(title_text="现金", row=5, col=1)
+    fig.update_yaxes(title_text=f"{target_name}价格 (元)", row=1, col=1)
+    fig.update_yaxes(title_text="上证指数", row=2, col=1)
+    fig.update_yaxes(title_text="收益率 (%)", row=3, col=1)
+    fig.update_yaxes(title_text="持仓 (股)", row=4, col=1)
+    fig.update_yaxes(title_text="现金 (元)", row=5, col=1)
     
     return fig
 
@@ -406,24 +537,72 @@ def calculate_performance_metrics(equity_data, trades_data):
         'final_equity': final_equity
     }
 
+def get_available_symbols():
+    """获取可用的股票代码列表"""
+    data_dir = "data/fixed_processed"
+    available_symbols = []
+
+    if os.path.exists(data_dir):
+        for file in os.listdir(data_dir):
+            if file.endswith('.csv') and file.startswith('SH') and file != 'SH000001.csv':
+                symbol = file.replace('.csv', '')
+                available_symbols.append(symbol)
+
+    return sorted(available_symbols)
+
 def main():
     """主函数"""
-    st.title("📈 T0交易系统回测分析 - 招商银行 (SH600036)")
-    st.markdown("---")
-    
+    # 侧边栏 - 标的选择
+    st.sidebar.header("📊 分析设置")
+
+    # 获取可用标的
+    available_symbols = get_available_symbols()
+    auto_detected = detect_target_symbol()
+
+    if available_symbols:
+        # 默认选择自动检测的标的，如果不在列表中则选择第一个
+        default_index = 0
+        if auto_detected in available_symbols:
+            default_index = available_symbols.index(auto_detected)
+
+        selected_symbol = st.sidebar.selectbox(
+            "选择分析标的",
+            available_symbols,
+            index=default_index,
+            format_func=lambda x: f"{get_stock_name(x)} ({x})"
+        )
+    else:
+        st.sidebar.error("未找到可用的股票数据")
+        selected_symbol = 'SH600036'
+
     # 加载数据
     with st.spinner("加载回测数据..."):
         trades_data, equity_data, result_file = load_backtest_results()
-        price_data = load_price_data()
-    
+        target_data, index_data, _ = load_price_data(selected_symbol)
+
     if trades_data is None or equity_data is None:
         st.error("❌ 未找到回测结果文件，请先运行回测！")
         st.info("请运行 `python run_t0_backtest.py` 生成回测结果")
         return
-    
-    if price_data is None:
-        st.error("❌ 未找到价格数据文件！")
+
+    if target_data is None or index_data is None:
+        st.error(f"❌ 未找到 {selected_symbol} 的价格数据文件！")
         return
+
+    # 获取股票名称并设置标题
+    target_name = get_stock_name(selected_symbol)
+    st.title(f"📈 T0交易系统回测分析 - {target_name} ({selected_symbol})")
+    st.markdown("---")
+
+    # 显示数据信息
+    st.sidebar.markdown("### 📈 数据信息")
+    st.sidebar.info(f"""
+    **当前分析标的**: {target_name}
+    **股票代码**: {selected_symbol}
+    **回测结果**: {os.path.basename(result_file)}
+    **数据点数**: {len(target_data):,}
+    **交易记录**: {len(trades_data):,}
+    """)
     
     # 侧边栏控制
     st.sidebar.header("📊 分析控制")
@@ -488,7 +667,7 @@ def main():
     st.header("🎯 价格走势与交易信号")
     
     if len(date_range) == 2:
-        price_chart = create_price_chart_with_signals(price_data, trades_data, date_range)
+        price_chart = create_price_chart_with_signals((target_data, index_data), trades_data, date_range, selected_symbol)
         if price_chart:
             st.plotly_chart(price_chart, use_container_width=True)
         else:

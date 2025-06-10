@@ -1,0 +1,9 @@
+{
+  "timestamp": "173624",
+  "symbol": "SH600000",
+  "stock_name": "浦发银行",
+  "backtest_period": "2023-01-03 09:41:00 to 2024-12-30 15:00:00",
+  "total_trades": 1999,
+  "final_equity": 1422267.4054449564,
+  "total_return_pct": 42.1207933619179
+}
