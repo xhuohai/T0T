@@ -35,7 +35,7 @@ def load_config():
     config = {
         'data': {
             'source': 'local',
-            'local_data_dir': 'data/cleaned'
+            'local_data_dir': 'data/fixed_processed'  # 使用修复后的完整数据
         },
         'backtest': {
             'start_date': '2023-01-01',
@@ -52,7 +52,7 @@ def load_config():
             'max_consecutive_trades': 2, # 最大连续同方向交易2次
             'min_price_change': 0.003    # 最小价格变动要求0.3%
         },
-        'symbols': ['SH600036']  # 使用招商银行进行测试
+        'symbols': ['SH600036']  # 使用招商银行进行测试（修复后的完整数据）
     }
     return config
 

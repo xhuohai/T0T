@@ -53,8 +53,9 @@ def load_backtest_results():
 @st.cache_data
 def load_price_data():
     """加载价格数据"""
-    # 使用清理后的数据
-    data_file = "data/cleaned/SH000001.csv"
+    # 使用修复后的完整数据 - 招商银行
+    data_file = "data/fixed_processed/SH600036.csv"
+    benchmark_file = "data/fixed_processed/SH000001.csv"  # 上证指数作为基准
     if os.path.exists(data_file):
         df = pd.read_csv(data_file)
         df['datetime'] = pd.to_datetime(df['datetime'])
@@ -407,7 +408,7 @@ def calculate_performance_metrics(equity_data, trades_data):
 
 def main():
     """主函数"""
-    st.title("📈 T0交易系统回测分析")
+    st.title("📈 T0交易系统回测分析 - 招商银行 (SH600036)")
     st.markdown("---")
     
     # 加载数据
