@@ -6,8 +6,43 @@
 import pandas as pd
 import numpy as np
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import re
+
+def clean_trading_hours_data(df):
+    """
+    彻底清理交易时间数据，只保留正常交易时间的数据
+    A股正常交易时间：
+    - 上午：9:30-11:30
+    - 下午：13:00-15:00
+    """
+    # 确保索引是datetime类型
+    if 'datetime' in df.columns:
+        df = df.set_index('datetime')
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+
+    # 定义正常交易时间
+    morning_start = time(9, 30)  # 9:30
+    morning_end = time(11, 30)   # 11:30
+    afternoon_start = time(13, 0) # 13:00
+    afternoon_end = time(15, 0)   # 15:00
+
+    # 过滤交易时间
+    mask = (
+        # 上午交易时间：9:30-11:30
+        ((df.index.time >= morning_start) & (df.index.time <= morning_end)) |
+        # 下午交易时间：13:00-15:00
+        ((df.index.time >= afternoon_start) & (df.index.time <= afternoon_end))
+    )
+
+    cleaned_df = df[mask].copy()
+
+    # 重置索引，将datetime作为列返回
+    cleaned_df = cleaned_df.reset_index()
+
+    return cleaned_df
 
 def parse_extracted_csv(file_path):
     """
@@ -174,7 +209,15 @@ def parse_extracted_csv(file_path):
         df = df[['datetime', 'Open', 'High', 'Low', 'Close', 'Volume', 'Amount', 'TVolume', 'TAmount']]
         df.columns = ['datetime', 'open', 'high', 'low', 'close', 'volume', 'amount', 'tvolume', 'tamount']
 
-        print(f"成功解析 {len(df)} 行数据")
+        # 彻底清理交易时间 - 只保留正常交易时间的数据
+        original_count = len(df)
+        df = clean_trading_hours_data(df)
+        cleaned_count = len(df)
+
+        if original_count > cleaned_count:
+            print(f"清理了 {original_count - cleaned_count} 行非交易时间数据 ({(original_count - cleaned_count)/original_count*100:.1f}%)")
+
+        print(f"成功解析 {cleaned_count} 行数据")
         return df
 
     except Exception as e:
@@ -198,7 +241,7 @@ def process_multiple_symbols(symbols):
 
         all_data = []
 
-        for year in ['2023', '2024']:
+        for year in ['2023', '2024', '2025']:
             year_path = os.path.join(extracted_base, year)
             if not os.path.exists(year_path):
                 continue

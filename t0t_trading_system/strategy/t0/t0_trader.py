@@ -33,6 +33,10 @@ class ImprovedT0Trader:
         self.daily_trades = []  # 当日交易记录
         self.t0_profit = 0  # T0交易累计收益
         self.total_transaction_costs = 0  # 累计交易成本
+
+        # A股T0交易限制：只能卖出前一天的持仓
+        self.previous_day_holdings = 0  # 前一天收盘时的持仓
+        self.today_bought_volume = 0  # 今日买入的数量（不能当日卖出）
         
         # 交易状态
         self.trade_state = {
@@ -229,6 +233,10 @@ class ImprovedT0Trader:
         Returns:
             bool: True表示应该跳过交易
         """
+        # 检查交易时间：避免在最后10分钟交易（14:50-15:00）
+        if signal_time.time() >= pd.Timestamp('14:50:00').time():
+            return True
+
         # 检查交易间隔
         if signal_type == 't0_buy' and self.trade_state['last_buy_time']:
             time_diff = (signal_time - self.trade_state['last_buy_time']).total_seconds() / 60
@@ -283,6 +291,13 @@ class ImprovedT0Trader:
         # 限制交易数量
         max_volume = self.base_position * self.max_trade_portion
         trade_volume = min(trade_volume, max_volume)
+
+        # 交易数量必须是100的整数倍（A股最小交易单位）
+        trade_volume = round(trade_volume / 100) * 100
+
+        # 确保最小交易量为100股
+        if trade_volume < 100:
+            trade_volume = 100
         
         # 检查是否应该执行交易
         if signal_type == 't0_buy':
@@ -302,6 +317,7 @@ class ImprovedT0Trader:
 
             self.current_cash -= total_cost
             self.current_holdings += trade_volume
+            self.today_bought_volume += trade_volume  # 记录当日买入数量
             self.total_transaction_costs += transaction_cost
             self.trade_state['last_buy_price'] = price
             self.trade_state['last_buy_time'] = signal_time
@@ -314,16 +330,26 @@ class ImprovedT0Trader:
             self.trade_state['last_trade_direction'] = 'buy'
             
         elif signal_type == 't0_sell':
-            # T0卖出：减少持仓，但不能低于基础仓位太多
-            if self.current_holdings <= self.base_position * 0.5:  # 持仓已经过少
+            # A股T0交易限制：只能卖出前一天的持仓，不能卖出当日买入的股票
+            available_for_sell = self.previous_day_holdings
+
+            # 检查是否有足够的前一天持仓可以卖出
+            if available_for_sell <= 0:
                 return None
-            
-            # 检查是否有足够持仓卖出
-            if trade_volume > self.current_holdings:
-                trade_volume = self.current_holdings - self.base_position
+
+            # 限制卖出数量不能超过前一天的持仓
+            if trade_volume > available_for_sell:
+                trade_volume = min(trade_volume, available_for_sell)
                 if trade_volume <= 0:
                     return None
-            
+
+            # 确保卖出后不会导致总持仓过低
+            if (self.current_holdings - trade_volume) < self.base_position * 0.5:
+                max_sellable = self.current_holdings - self.base_position * 0.5
+                if max_sellable <= 0:
+                    return None
+                trade_volume = min(trade_volume, max_sellable)
+
             # 检查价格是否合适
             if self.trade_state['last_buy_price'] is not None:
                 if price <= self.trade_state['last_buy_price'] * 1.005:  # 价格没有明显上涨
@@ -376,9 +402,65 @@ class ImprovedT0Trader:
         self.daily_trades.append(trade_record)
         return trade_record
 
+    def _should_delay_force_balance(self, current_price, position_diff):
+        """
+        智能决策：是否应该延迟强制平仓
+
+        Args:
+            current_price: float，当前价格
+            position_diff: float，仓位差异（正数表示超仓，负数表示欠仓）
+
+        Returns:
+            tuple: (should_delay: bool, reason: str)
+        """
+        # 策略1：价格损失评估
+        if position_diff > 0:  # 需要卖出
+            # 检查当前价格相对于今日买入价格的损失
+            if self.trade_state['last_buy_price'] is not None:
+                price_loss_pct = (self.trade_state['last_buy_price'] - current_price) / self.trade_state['last_buy_price']
+
+                # 如果损失超过0.5%，考虑延迟
+                if price_loss_pct > 0.005:
+                    return True, f"价格损失{price_loss_pct*100:.2f}%过大，延迟卖出"
+
+        # 策略2：日内价格位置评估
+        if self.trade_state['daily_high'] and self.trade_state['daily_low']:
+            daily_range = self.trade_state['daily_high'] - self.trade_state['daily_low']
+            if daily_range > 0:
+                relative_position = (current_price - self.trade_state['daily_low']) / daily_range
+
+                if position_diff > 0:  # 需要卖出
+                    # 如果当前价格在日内低位（下30%），延迟卖出
+                    if relative_position < 0.3:
+                        return True, f"价格在日内低位({relative_position*100:.1f}%)，延迟卖出"
+
+                elif position_diff < 0:  # 需要买入
+                    # 如果当前价格在日内高位（上70%），延迟买入
+                    if relative_position > 0.7:
+                        return True, f"价格在日内高位({relative_position*100:.1f}%)，延迟买入"
+
+        # 策略3：交易频率控制
+        # 如果今日已经有多次交易，避免过度交易
+        if len(self.daily_trades) >= 8:  # 今日交易次数过多
+            return True, f"今日已交易{len(self.daily_trades)}次，避免过度交易"
+
+        # 策略4：周五特殊处理
+        # 周五必须平仓，不能延迟到下周
+        if hasattr(self, 'current_date'):
+            if self.current_date.weekday() == 4:  # 周五
+                return False, "周五必须平仓"
+
+        # 默认不延迟
+        return False, "价格合理，执行平仓"
+
     def force_position_balance(self, current_price, current_time=None, reason="end_of_day"):
         """
-        强制平衡仓位到基础仓位
+        智能强制平衡仓位到基础仓位
+
+        优化策略：
+        1. 评估当前价格是否合理
+        2. 如果价格不利，考虑延迟到第二天
+        3. 避免在不利价格下强制交易造成亏损
 
         Args:
             current_price: float，当前价格
@@ -389,9 +471,30 @@ class ImprovedT0Trader:
             dict: 调整交易记录，如果无需调整则返回None
         """
         position_diff = self.current_holdings - self.base_position
-        
+
         if abs(position_diff) < 0.01:  # 差异很小，无需调整
             return None
+
+        # 智能平仓决策：评估是否应该延迟平仓
+        should_delay, delay_reason = self._should_delay_force_balance(current_price, position_diff)
+
+        if should_delay and reason == "force_balance_1450":
+            # 记录延迟决策，但不执行交易
+            print(f"延迟强制平仓: {delay_reason}")
+            return {
+                'time': current_time,
+                'type': 'delay_balance',
+                'price': current_price,
+                'volume': 0,
+                'value': 0,
+                'transaction_cost': 0,
+                'cash_change': 0,
+                'holdings_change': 0,
+                'reason': f"delayed_{reason}",
+                'delay_reason': delay_reason,
+                'symbol': getattr(self, 'symbol', 'Unknown'),
+                'stock_name': getattr(self, 'stock_name', 'Unknown')
+            }
         
         if position_diff > 0:
             # 持仓过多，需要卖出
@@ -446,6 +549,13 @@ class ImprovedT0Trader:
 
     def reset_daily_state(self):
         """重置日内状态"""
+        # 更新前一天持仓（用于T0交易限制）
+        self.previous_day_holdings = self.current_holdings
+
+        # 重置当日买入数量
+        self.today_bought_volume = 0
+
+        # 重置日内交易状态
         self.daily_trades = []
         self.trade_state = {
             'last_buy_price': None,

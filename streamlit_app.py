@@ -65,6 +65,43 @@ def get_stock_name(symbol):
     }
     return stock_names.get(symbol, symbol)
 
+def calculate_technical_indicators(df):
+    """计算技术指标 - 使用TechnicalIndicators类保持一致性"""
+    # 导入TechnicalIndicators类
+    import sys
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, current_dir)
+    from t0t_trading_system.strategy.technical.indicators import TechnicalIndicators
+
+    df = df.copy()
+
+    # 使用TechnicalIndicators类计算移动平均线
+    df = TechnicalIndicators.calculate_ma(df, [20, 60])
+
+    # 使用TechnicalIndicators类计算MACD
+    df = TechnicalIndicators.calculate_macd(df)
+
+    # 使用TechnicalIndicators类计算KDJ
+    df = TechnicalIndicators.calculate_kdj(df)
+
+    # 为了保持streamlit显示的兼容性，添加别名
+    # 移动平均线别名
+    df['ma20'] = df['ma_20']
+    df['ma60'] = df['ma_60']
+
+    # MACD别名
+    df['macd'] = df['macd_dif']  # DIF线
+    df['macd_signal'] = df['macd_dea']  # DEA线
+    df['macd_histogram'] = df['macd_bar']  # MACD柱状图
+
+    # KDJ别名
+    df['k'] = df['kdj_k']
+    df['d'] = df['kdj_d']
+    df['j'] = df['kdj_j']
+
+    return df
+
 def detect_target_symbol():
     """从最新的回测结果中检测目标标的代码"""
     try:
@@ -168,19 +205,21 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
     if target_filtered.empty or index_filtered.empty:
         return None
 
-    # 创建子图 - 分离显示目标标的和上证指数
+    # 创建子图 - 添加MACD和KDJ指标
     fig = make_subplots(
-        rows=5, cols=1,
+        rows=7, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.03,
+        vertical_spacing=0.02,
         subplot_titles=(
             f'{target_name}价格走势与交易信号',
             '上证指数走势',
             f'收益率对比 ({target_name} vs 上证指数 vs T0策略)',
+            'MACD指标',
+            'KDJ指标',
             '持仓变化',
             '现金流变化'
         ),
-        row_heights=[0.3, 0.25, 0.25, 0.1, 0.1]
+        row_heights=[0.25, 0.2, 0.2, 0.12, 0.12, 0.08, 0.08]
     )
 
     # 第一行：目标标的价格K线图
@@ -213,9 +252,11 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
         row=2, col=1
     )
 
+    # 计算技术指标
+    target_filtered = calculate_technical_indicators(target_filtered)
+
     # 添加目标标的移动平均线
     if len(target_filtered) > 20:
-        target_filtered['ma20'] = target_filtered['close'].rolling(window=20).mean()
         fig.add_trace(
             go.Scatter(
                 x=target_filtered['datetime'],
@@ -229,7 +270,6 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
         )
 
     if len(target_filtered) > 60:
-        target_filtered['ma60'] = target_filtered['close'].rolling(window=60).mean()
         fig.add_trace(
             go.Scatter(
                 x=target_filtered['datetime'],
@@ -325,6 +365,86 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
                 ),
                 row=3, col=1
             )
+
+    # 添加MACD指标（第4行）
+    if 'macd' in target_filtered.columns:
+        # MACD线
+        fig.add_trace(
+            go.Scatter(
+                x=target_filtered['datetime'],
+                y=target_filtered['macd'],
+                mode='lines',
+                name='MACD',
+                line=dict(color='blue', width=1)
+            ),
+            row=4, col=1
+        )
+
+        # MACD信号线
+        fig.add_trace(
+            go.Scatter(
+                x=target_filtered['datetime'],
+                y=target_filtered['macd_signal'],
+                mode='lines',
+                name='MACD Signal',
+                line=dict(color='red', width=1)
+            ),
+            row=4, col=1
+        )
+
+        # MACD柱状图
+        fig.add_trace(
+            go.Bar(
+                x=target_filtered['datetime'],
+                y=target_filtered['macd_histogram'],
+                name='MACD Histogram',
+                marker_color=['green' if x >= 0 else 'red' for x in target_filtered['macd_histogram']],
+                opacity=0.6
+            ),
+            row=4, col=1
+        )
+
+    # 添加KDJ指标（第5行）
+    if 'k' in target_filtered.columns:
+        # K线
+        fig.add_trace(
+            go.Scatter(
+                x=target_filtered['datetime'],
+                y=target_filtered['k'],
+                mode='lines',
+                name='K',
+                line=dict(color='blue', width=1)
+            ),
+            row=5, col=1
+        )
+
+        # D线
+        fig.add_trace(
+            go.Scatter(
+                x=target_filtered['datetime'],
+                y=target_filtered['d'],
+                mode='lines',
+                name='D',
+                line=dict(color='red', width=1)
+            ),
+            row=5, col=1
+        )
+
+        # J线
+        fig.add_trace(
+            go.Scatter(
+                x=target_filtered['datetime'],
+                y=target_filtered['j'],
+                mode='lines',
+                name='J',
+                line=dict(color='green', width=1)
+            ),
+            row=5, col=1
+        )
+
+        # 添加超买超卖线
+        fig.add_hline(y=80, line_dash="dash", line_color="gray", opacity=0.5, row=5, col=1)
+        fig.add_hline(y=20, line_dash="dash", line_color="gray", opacity=0.5, row=5, col=1)
     
     # 添加买入信号
     buy_trades = trades_filtered[trades_filtered['type'] == 'buy']
@@ -373,7 +493,7 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
     # 成交量 - 显示招商银行成交量（第四行已经被归一化对比占用，这里不显示成交量）
     # 如果需要成交量，可以在其他地方显示
     
-    # 持仓变化（第4行，主轴）
+    # 持仓变化（第6行）
     if not trades_filtered.empty:
         fig.add_trace(
             go.Scatter(
@@ -384,10 +504,10 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
                 line=dict(color='orange', width=2),
                 marker=dict(size=4)
             ),
-            row=4, col=1
+            row=6, col=1
         )
 
-    # 现金流变化（第5行）
+    # 现金流变化（第7行）
     if not trades_filtered.empty:
         fig.add_trace(
             go.Scatter(
@@ -398,7 +518,7 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
                 line=dict(color='purple', width=2),
                 marker=dict(size=4)
             ),
-            row=5, col=1
+            row=7, col=1
         )
     
     # 更新布局
@@ -414,8 +534,10 @@ def create_price_chart_with_signals(price_data_tuple, trades_data, date_range, t
     fig.update_yaxes(title_text=f"{target_name}价格 (元)", row=1, col=1)
     fig.update_yaxes(title_text="上证指数", row=2, col=1)
     fig.update_yaxes(title_text="收益率 (%)", row=3, col=1)
-    fig.update_yaxes(title_text="持仓 (股)", row=4, col=1)
-    fig.update_yaxes(title_text="现金 (元)", row=5, col=1)
+    fig.update_yaxes(title_text="MACD", row=4, col=1)
+    fig.update_yaxes(title_text="KDJ (%)", row=5, col=1)
+    fig.update_yaxes(title_text="持仓 (股)", row=6, col=1)
+    fig.update_yaxes(title_text="现金 (元)", row=7, col=1)
     
     return fig
 

@@ -65,8 +65,9 @@ def load_config(symbol):
             'local_data_dir': 'data/fixed_processed'
         },
         'backtest': {
-            'start_date': '2023-01-01',
-            'end_date': '2024-12-31',
+            'start_date': '2024-04-13',  # 提前2天用于指标预热
+            'end_date': '2025-05-12',
+            'trading_start_date': '2024-04-15',  # 实际交易开始日期
             'initial_capital': 1000000,
             'base_position_ratio': 0.5
         },
@@ -155,70 +156,102 @@ def run_t0_backtest_for_symbol(symbol):
     all_trades = []
     daily_performance = []
     equity_curve = []
-    
+
     # 按日期分组处理
     minute_data['date'] = minute_data.index.date
     dates = minute_data['date'].unique()
-    
+
+    # 获取实际交易开始日期
+    trading_start_date = pd.to_datetime(config['backtest']['trading_start_date']).date()
+    print(f"预热期: {dates[0]} 到 {trading_start_date}")
+    print(f"交易期: {trading_start_date} 到 {dates[-1]}")
+
     for i, date in enumerate(dates):
         if i % 50 == 0:
             print(f"处理进度: {i+1}/{len(dates)} ({(i+1)/len(dates)*100:.1f}%)")
-        
+
         # 获取当日数据
         day_data = minute_data[minute_data['date'] == date].copy()
-        
+
         if len(day_data) < 10:  # 数据点太少，跳过
             continue
+
+        # 判断是否在预热期
+        is_warmup_period = date < trading_start_date
         
         # 重置日内状态
         t0_trader.reset_daily_state()
-        
-        # 检测T0交易信号
+
+        # 设置当前日期（用于智能平仓决策）
+        t0_trader.current_date = date
+
+        # 检测T0交易信号（预热期也需要计算信号，用于指标计算）
         day_data_with_signals = t0_trader.detect_t0_signals(day_data)
-        
-        # 执行T0交易
-        for j in range(len(day_data_with_signals)):
-            current_bar = day_data_with_signals.iloc[j]
-            current_time = day_data_with_signals.index[j]
-            
-            # 执行T0买入
-            if current_bar['t0_buy_signal']:
-                trade_record = t0_trader.execute_t0_trade(
-                    current_time, 't0_buy', current_bar['close'], current_bar['signal_strength']
-                )
-                if trade_record:
-                    all_trades.append(trade_record)
-            
-            # 执行T0卖出
-            if current_bar['t0_sell_signal']:
-                trade_record = t0_trader.execute_t0_trade(
-                    current_time, 't0_sell', current_bar['close'], current_bar['signal_strength']
-                )
-                if trade_record:
-                    all_trades.append(trade_record)
-        
-        # 收盘前强制平衡仓位
+
+        # 更新日内高低点
         if len(day_data_with_signals) > 0:
-            last_price = day_data_with_signals['close'].iloc[-1]
-            last_time = day_data_with_signals.index[-1]
-            balance_trade = t0_trader.force_position_balance(last_price, last_time, "end_of_day")
+            t0_trader.trade_state['daily_high'] = day_data_with_signals['high'].max()
+            t0_trader.trade_state['daily_low'] = day_data_with_signals['low'].min()
+
+        # 只在非预热期执行交易
+        if not is_warmup_period:
+            # 执行T0交易
+            for j in range(len(day_data_with_signals)):
+                current_bar = day_data_with_signals.iloc[j]
+                current_time = day_data_with_signals.index[j]
+
+                # 执行T0买入（使用开盘价交易）
+                if current_bar['t0_buy_signal']:
+                    trade_record = t0_trader.execute_t0_trade(
+                        current_time, 't0_buy', current_bar['open'], current_bar['signal_strength']
+                    )
+                    if trade_record:
+                        all_trades.append(trade_record)
+
+                # 执行T0卖出（使用开盘价交易）
+                if current_bar['t0_sell_signal']:
+                    trade_record = t0_trader.execute_t0_trade(
+                        current_time, 't0_sell', current_bar['open'], current_bar['signal_strength']
+                    )
+                    if trade_record:
+                        all_trades.append(trade_record)
+        
+        # 14:50强制平衡仓位（避免集合竞价阶段交易，仅在交易期执行）
+        if not is_warmup_period and len(day_data_with_signals) > 0:
+            # 找到14:50的数据点，如果没有则使用最后一个数据点
+            force_balance_time = None
+            force_balance_price = None
+
+            for idx, row in day_data_with_signals.iterrows():
+                if idx.time() >= pd.Timestamp('14:50:00').time():
+                    force_balance_time = idx
+                    force_balance_price = row['close']
+                    break
+
+            # 如果没有找到14:50的数据，使用最后一个数据点
+            if force_balance_time is None:
+                force_balance_time = day_data_with_signals.index[-1]
+                force_balance_price = day_data_with_signals['close'].iloc[-1]
+
+            balance_trade = t0_trader.force_position_balance(force_balance_price, force_balance_time, "force_balance_1450")
             if balance_trade:
                 all_trades.append(balance_trade)
         
-        # 记录当日表现
-        daily_perf = t0_trader.get_daily_performance()
-        daily_perf['date'] = date
-        daily_perf['closing_price'] = day_data_with_signals['close'].iloc[-1] if len(day_data_with_signals) > 0 else 0
-        daily_performance.append(daily_perf)
-        
-        # 计算当日权益
-        current_equity = t0_trader.current_cash + t0_trader.current_holdings * daily_perf['closing_price']
-        equity_curve.append({
-            'date': date,
-            'equity': current_equity,
-            'holdings': t0_trader.current_holdings,
-            'cash': t0_trader.current_cash
-        })
+        # 记录当日表现（仅在交易期记录）
+        if not is_warmup_period:
+            daily_perf = t0_trader.get_daily_performance()
+            daily_perf['date'] = date
+            daily_perf['closing_price'] = day_data_with_signals['close'].iloc[-1] if len(day_data_with_signals) > 0 else 0
+            daily_performance.append(daily_perf)
+
+            # 计算当日权益
+            current_equity = t0_trader.current_cash + t0_trader.current_holdings * daily_perf['closing_price']
+            equity_curve.append({
+                'date': date,
+                'equity': current_equity,
+                'holdings': t0_trader.current_holdings,
+                'cash': t0_trader.current_cash
+            })
     
     print("回测完成!")
     
